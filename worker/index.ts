@@ -1167,7 +1167,6 @@ async function createShipment(request: Request, env: Env, orderId: string) {
   const deliveryNotes = form.getAll("deliveryNote");
   if (!shippedAt || !Number.isInteger(quantity) || quantity < 1 || !carrier || !trackingNumber || !Number.isInteger(boxCount) || boxCount <= 0) return error("请完整填写发货登记，发货数量和箱数必须是整数");
   if (shippedAt < order.order_date) return error("实际发货日期不能早于下单日期");
-  if (!onlinePurchase && !deliveryNotes.length) return error("请上传送货单附件");
   const files: { file: File; buffer: ArrayBuffer; kind: string }[] = [];
   for (const [kind, entries] of [["shipment_photo", photos], ["delivery_note", deliveryNotes]] as const) {
     for (const file of entries) {

@@ -253,6 +253,7 @@ function Workbench({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [mobileNav, setMobileNav] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [currentProject, setCurrentProject] = useState(initialParams.get("project") || "尚未选择项目");
+  const refreshPromise = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -276,25 +277,31 @@ function Workbench({ user, onLogout }: { user: User; onLogout: () => void }) {
     return () => window.removeEventListener("popstate", restoreUrlState);
   }, [defaultView]);
 
-  const refresh = async (keepSelection = true) => {
-    if (user.role === "finance") { setData({ user, orders: [], suppliers: [] }); return; }
-    try {
-      const next = await api<DashboardData>("/api/dashboard");
-      setData(next);
-      const refreshedSelection = next.orders.find((order) => order.id === selectedId);
-      if (refreshedSelection) setCurrentProject(refreshedSelection.project_name);
-      if (!keepSelection || !next.orders.some((order) => order.id === selectedId)) setSelectedId("");
-      setError("");
-    } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 401) onLogout();
-      else setError(caught instanceof Error ? caught.message : "无法读取数据");
-    }
+  const refresh = (keepSelection = true) => {
+    if (refreshPromise.current) return refreshPromise.current;
+    const pending = (async () => {
+      if (user.role === "finance") { setData({ user, orders: [], suppliers: [] }); return; }
+      try {
+        const next = await api<DashboardData>("/api/dashboard");
+        setData(next);
+        const refreshedSelection = next.orders.find((order) => order.id === selectedId);
+        if (refreshedSelection) setCurrentProject(refreshedSelection.project_name);
+        if (!keepSelection || !next.orders.some((order) => order.id === selectedId)) setSelectedId("");
+        setError("");
+      } catch (caught) {
+        if (caught instanceof ApiError && caught.status === 401) onLogout();
+        else setError(caught instanceof Error ? caught.message : "无法读取数据");
+      }
+    })();
+    refreshPromise.current = pending;
+    void pending.finally(() => { if (refreshPromise.current === pending) refreshPromise.current = null; });
+    return pending;
   };
 
   useEffect(() => { void refresh(false); }, []);
   useEffect(() => {
     const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("yifun-procurement-data");
-    const sync = () => { void refresh(); setRefreshVersion(current => current + 1); };
+    const sync = () => { void refresh().then(() => setRefreshVersion(current => current + 1)); };
     const announce = () => { channel?.postMessage("changed"); sync(); };
     window.addEventListener("procurement:data-changed", announce);
     channel?.addEventListener("message", sync);
@@ -307,8 +314,8 @@ function Workbench({ user, onLogout }: { user: User; onLogout: () => void }) {
       if (loading || document.hidden || document.querySelector("dialog[open]") || document.activeElement?.matches("input, textarea, select")) return;
       loading = true;
       try {
-        const next = await api<DashboardData>("/api/dashboard");
-        if (active) { setData(next); setRefreshVersion(current => current + 1); }
+        await refresh();
+        if (active) setRefreshVersion(current => current + 1);
       } catch { /* Keep the last loaded order until the next refresh. */ }
       finally { loading = false; }
     };
@@ -667,27 +674,34 @@ function CorrectionHistory({ item, action }: { item: PurchaseOrder["items"][numb
 function ProductAcceptanceCard({ order, item, user, onChanged }: { order: PurchaseOrder; item: PurchaseOrder["items"][number]; user: User; onChanged: (message: string) => void | Promise<void> }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const attempt=useRef({signature:"",id:""});
-  const confirmed=item.acceptance_status!=="pending";
-  const cancellable=confirmed && canPurchase(user.role) && !order.archived_at && item.shipped_quantity===0 && !item.received_quantity && !item.stocked_quantity;
+  const submitting=useRef(false);
+  const [optimisticDecision, setOptimisticDecision] = useState<"approved" | "rejected" | null>(null);
+  useEffect(() => { if (item.acceptance_status !== "pending") setOptimisticDecision(null); }, [item.acceptance_status]);
+  const acceptanceStatus=optimisticDecision || item.acceptance_status;
+  const confirmed=acceptanceStatus!=="pending";
+  const cancellable=item.acceptance_status!=="pending" && canPurchase(user.role) && !order.archived_at && item.shipped_quantity===0 && !item.received_quantity && !item.stocked_quantity;
   async function cancel() {
-    if(busy || !cancellable) return;
+    if(submitting.current || busy || !cancellable) return;
+    submitting.current=true;
     setBusy(true);setError("");
     try { await cancelItemAction(order,item,"acceptance",attempt);await onChanged("已取消验收"); }
     catch(cause) { setError(cause instanceof Error ? cause.message : "取消失败，请重试"); }
-    finally { setBusy(false); }
+    finally { submitting.current=false;setBusy(false); }
   }
   const photos = order.attachments.filter(file => file.item_id === item.id && file.kind === "production_photo");
   const mayOperateBeforeConfirmation = user.role === "admin" || user.supplier_operations === 1;
   const reviewable = !order.archived_at && item.shipped_quantity === 0 && item.acceptance_status === "pending" && ((photos.length > 0 || item.production_photo_waived === 1) && ["production_complete", "ready_to_ship"].includes(item.workflow_stage) && (mayOperateBeforeConfirmation ? ["pending_confirmation", "in_production", "ready_to_ship", "partial_shipped"].includes(order.status) : ["in_production", "ready_to_ship", "partial_shipped"].includes(order.status)));
-  const status = item.shipped_quantity > 0 ? "已发货 · 只读" : item.acceptance_status === "approved" ? "已接受 · 允许发货" : item.acceptance_status === "rejected" ? "已退回 · 等待整改" : reviewable ? "待采购验收" : "等待供应商完成生产并提供实图状态";
+  const status = item.shipped_quantity > 0 ? "已发货 · 只读" : acceptanceStatus === "approved" ? "已接受 · 允许发货" : acceptanceStatus === "rejected" ? "已退回 · 等待整改" : reviewable ? "待采购验收" : "等待供应商完成生产并提供实图状态";
   async function decide(decision: "approved" | "rejected") {
+    if(submitting.current || busy || !reviewable) return;
+    submitting.current=true;
     setBusy(true); setError("");
-    try { await api(`/api/orders/${order.id}/items/${item.id}/acceptance`, { method: "POST", body: JSON.stringify({ decision, reason: "", revision: item.production_revision }) }); await onChanged(`${item.product_name}：${decision === "approved" ? "验收通过，允许发货" : "已退回整改"}`); }
+    try { await api(`/api/orders/${order.id}/items/${item.id}/acceptance`, { method: "POST", body: JSON.stringify({ decision, reason: "", revision: item.production_revision }) }); setOptimisticDecision(decision); await onChanged(`${item.product_name}：${decision === "approved" ? "验收通过，允许发货" : "已退回整改"}`); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "验收保存失败，请刷新核对"); }
-    finally { setBusy(false); }
+    finally { submitting.current=false;setBusy(false); }
   }
   return <div className="inline-acceptance" title={status}><strong>采购验收</strong>
-    <button type="button" className="primary workflow-confirm" data-confirmed={item.acceptance_status === "approved"} aria-pressed={confirmed} title={confirmed ? "再次点击取消验收；需先取消后续收货和入库，已发货不可取消" : "确认验收"} disabled={busy || (confirmed ? !cancellable : !reviewable)} onClick={() => confirmed ? void cancel() : void decide("approved")}>{busy ? "保存中" : confirmed ? (item.acceptance_status==="approved" ? "已验收" : "已退回") : "确认验收"}</button>
+    <button type="button" className="primary workflow-confirm" data-confirmed={acceptanceStatus === "approved"} aria-pressed={confirmed} title={confirmed ? "再次点击取消验收；需先取消后续收货和入库，已发货不可取消" : "确认验收"} disabled={busy || (confirmed ? !cancellable : !reviewable)} onClick={() => confirmed ? void cancel() : void decide("approved")}>{busy ? "保存中" : confirmed ? (acceptanceStatus==="approved" ? "已验收" : "已退回") : "确认验收"}</button>
     <CorrectionHistory item={item} action="acceptance" />
     {error && <p className="form-error" role="alert">{error}</p>}
     {item.acceptance_history?.length > 0 && <details><summary>验收记录（{item.acceptance_history.length}）</summary>{[...item.acceptance_history].reverse().map(entry => <div className="acceptance-record" key={entry.id}><strong>{entry.decision === "approved" ? "接受" : "退回整改"} · {entry.actorName}</strong><p>{entry.reason || "无备注"}</p><small>{new Date(entry.createdAt).toLocaleString("zh-CN")} · 生产资料第 {entry.revision} 版</small><div>{entry.photoIds.map((id, index) => <a key={id} href={`/api/attachments/${id}`} target="_blank" rel="noreferrer">当时实拍 {index + 1} </a>)}</div></div>)}</details>}
@@ -1128,10 +1142,10 @@ function ProductShipmentDialog({ order, item, onlinePurchase = false, onClose, o
     finally { setBusy(false); }
   }
   return <dialog ref={ref} className="product-shipment-dialog" aria-labelledby={`shipment-title-${item.id}`} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }} onClick={event => { if (event.target === event.currentTarget && !busy) onClose(); }}><form onSubmit={submit}>
-    <header><div><small>{order.po_number}</small><h3 id={`shipment-title-${item.id}`}>登记发货 · {item.product_name}</h3><p>{onlinePurchase ? "网上采购由采购直接登记发货；送货单可选。" : "提交成功后，“发货完成”节点会自动勾选。"}</p></div><button type="button" aria-label="关闭发货登记" disabled={busy} onClick={onClose}><X size={20} /></button></header>
+    <header><div><small>{order.po_number}</small><h3 id={`shipment-title-${item.id}`}>登记发货 · {item.product_name}</h3><p>{onlinePurchase ? "网上采购由采购直接登记发货；送货单可选。" : "提交成功后，“发货完成”节点会自动勾选；送货单可选。"}</p></div><button type="button" aria-label="关闭发货登记" disabled={busy} onClick={onClose}><X size={20} /></button></header>
     <div className="product-shipment-grid"><label>实际发货日期<input required type="date" min={order.order_date} value={shippedAt} onChange={e => setShippedAt(e.target.value)} /></label><label>本次发货数量<input required type="number" min="1" max={remaining} step="1" value={quantity} onChange={e => setQuantity(Number(e.target.value))} /></label><label>物流公司<input required value={carrier} onChange={e => setCarrier(e.target.value)} placeholder="如：顺丰速运" /></label><label>快递 / 物流单号<input required autoFocus value={tracking} onChange={e => setTracking(e.target.value)} placeholder="请输入单号" /></label><label>箱数<input required type="number" min="1" step="1" value={boxCount} onChange={e => setBoxCount(e.target.value)} /></label></div>
-    <FilePicker label={onlinePurchase ? "上传送货单（可选）" : "上传送货单（必填）"} files={deliveryNote} onFiles={setDeliveryNote} disabled={busy} accept=".pdf,.doc,.docx,.xls,.xlsx,image/jpeg,image/png,image/webp" />
-    {error && <p className="form-error" role="alert">{error}</p>}<div className="action-buttons"><button type="button" className="secondary" disabled={busy} onClick={onClose}>取消</button><button className="primary" disabled={busy || !tracking.trim() || !carrier.trim() || (!onlinePurchase && !deliveryNote.length)}>{busy ? "正在提交" : "确认发货"}</button></div>
+    <FilePicker label="上传送货单（可选）" files={deliveryNote} onFiles={setDeliveryNote} disabled={busy} accept=".pdf,.doc,.docx,.xls,.xlsx,image/jpeg,image/png,image/webp" />
+    {error && <p className="form-error" role="alert">{error}</p>}<div className="action-buttons"><button type="button" className="secondary" disabled={busy} onClick={onClose}>取消</button><button className="primary" disabled={busy || !tracking.trim() || !carrier.trim()}>{busy ? "正在提交" : "确认发货"}</button></div>
   </form></dialog>;
 }
 
@@ -1218,7 +1232,6 @@ function ActionPanel({ order, user, onChanged, supplierOperations = false }: { o
   }
 
   async function submitShipment() {
-    if (!deliveryNote.length) return;
     if (!Number.isInteger(Number(shipmentQuantity)) || Number(shipmentQuantity) < 1) { setError("本次发货数量必须是大于等于 1 的整数"); return; }
     setBusy(true); setError("");
     try {
@@ -1256,7 +1269,7 @@ function ActionPanel({ order, user, onChanged, supplierOperations = false }: { o
       const photoCount = order.attachments.filter(file => file.item_id === item.id && file.kind === "production_photo").length;
       const selected = Object.hasOwn(shipmentItems, item.id);
       return <div className="shipment-product-choice" key={item.id}><label><input type="checkbox" checked={selected} disabled={busy || remaining <= 0 || legacyShipment || item.acceptance_status !== "approved"} onChange={event => setShipmentItems(current => { const next = { ...current }; if (event.target.checked) next[item.id] = remaining; else delete next[item.id]; return next; })} /><span>{item.model && `${item.model} · `}{item.product_name}<small>采购 {item.quantity} · 已发 {item.shipped_quantity} · 待发 {remaining}{remaining <= 0 ? " · 已全部发完" : ""} · {item.acceptance_status === "approved" ? "采购已接受" : item.acceptance_status === "rejected" ? "退回整改" : "未验收，不可发货"} · {item.production_photo_waived === 1 ? "未提供实物图" : `实拍 ${photoCount} 张${!photoCount ? "（请先上传）" : ""}`}</small></span></label><input type="number" aria-label={item.product_name + " 本次发货数量"} min="1" max={remaining} step="1" value={selected ? shipmentItems[item.id] : ""} disabled={busy || !selected || remaining <= 0 || legacyShipment || item.acceptance_status !== "approved"} onChange={event => setShipmentItems(current => ({ ...current, [item.id]: Number(event.target.value) }))} /></div>;
-    })}</div><label>本次发货总数<input value={shipmentQuantity} readOnly /></label><label className="complete-check"><input type="checkbox" checked={order.items.some(item => item.quantity > item.shipped_quantity && item.acceptance_status === "approved") && order.items.filter(item => item.quantity > item.shipped_quantity && item.acceptance_status === "approved").every(item => shipmentItems[item.id] === item.quantity - item.shipped_quantity)} disabled={busy || legacyShipment} onChange={event => setShipmentItems(event.target.checked ? Object.fromEntries(order.items.filter(item => item.quantity > item.shipped_quantity && item.acceptance_status === "approved").map(item => [item.id, item.quantity - item.shipped_quantity])) : {})} /><span>选择全部已验收的待发产品</span></label><label>物流公司<input value={carrier} onChange={(event) => setCarrier(event.target.value)} placeholder="物流公司名称" /></label><label>物流单号<input value={tracking} onChange={(event) => setTracking(event.target.value)} placeholder="请输入物流单号" /></label><label>箱数<input type="number" min="1" step="1" value={boxCount} onChange={(event) => setBoxCount(event.target.value)} placeholder="本次发货箱数" /></label><p className="form-help">发货产品将自动关联各自的生产实拍照片，无需重复上传原订单图。</p><FilePicker label="上传送货单附件" files={deliveryNote} onFiles={setDeliveryNote} disabled={busy} accept=".pdf,.doc,.docx,.xls,.xlsx,image/jpeg,image/png,image/webp" /><button className="primary shipment-submit" disabled={busy || legacyShipment || !carrier || !tracking || !shippedAt || !shipmentQuantity || !boxCount || !deliveryNote.length} onClick={submitShipment}><Send size={17} />{busy ? "正在提交" : "提交发货登记"}</button></div>{error && <p className="form-error" role="alert">{error}</p>}</section>;
+    })}</div><label>本次发货总数<input value={shipmentQuantity} readOnly /></label><label className="complete-check"><input type="checkbox" checked={order.items.some(item => item.quantity > item.shipped_quantity && item.acceptance_status === "approved") && order.items.filter(item => item.quantity > item.shipped_quantity && item.acceptance_status === "approved").every(item => shipmentItems[item.id] === item.quantity - item.shipped_quantity)} disabled={busy || legacyShipment} onChange={event => setShipmentItems(event.target.checked ? Object.fromEntries(order.items.filter(item => item.quantity > item.shipped_quantity && item.acceptance_status === "approved").map(item => [item.id, item.quantity - item.shipped_quantity])) : {})} /><span>选择全部已验收的待发产品</span></label><label>物流公司<input value={carrier} onChange={(event) => setCarrier(event.target.value)} placeholder="物流公司名称" /></label><label>物流单号<input value={tracking} onChange={(event) => setTracking(event.target.value)} placeholder="请输入物流单号" /></label><label>箱数<input type="number" min="1" step="1" value={boxCount} onChange={(event) => setBoxCount(event.target.value)} placeholder="本次发货箱数" /></label><p className="form-help">发货产品将自动关联各自的生产实拍照片，无需重复上传原订单图。</p><FilePicker label="上传送货单附件（可选）" files={deliveryNote} onFiles={setDeliveryNote} disabled={busy} accept=".pdf,.doc,.docx,.xls,.xlsx,image/jpeg,image/png,image/webp" /><button className="primary shipment-submit" disabled={busy || legacyShipment || !carrier || !tracking || !shippedAt || !shipmentQuantity || !boxCount} onClick={submitShipment}><Send size={17} />{busy ? "正在提交" : "提交发货登记"}</button></div>{error && <p className="form-error" role="alert">{error}</p>}</section>;
     return <section className="action-panel quiet"><div className="action-copy"><Check size={22} /><div><h3>{order.status === "shipped" ? "已提交发货信息" : order.status === "received" ? "仓库已确认到货" : "采购单已完结"}</h3><p>{order.status === "shipped" ? "请等待仓库部确认收货。" : "当前节点无需供应商继续操作。"}</p></div></div></section>;
   }
 

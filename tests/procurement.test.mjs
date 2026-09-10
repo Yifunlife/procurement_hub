@@ -81,13 +81,13 @@ test('multiple shipment photos are saved together and invalid batches leave no r
   db.exec("UPDATE purchase_orders SET status='ready_to_ship' WHERE id='order'");
   seedProductionPhotos(db);
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF9kAAAAASUVORK5CYII=', 'base64');
-  function form() {
+  function form(includeDeliveryNote = true) {
     const data = new FormData();
     data.set('items', JSON.stringify(Array.from({ length: 12 }, (_, i) => ({ itemId: `item-${i}`, quantity: 5 }))));
     for (const [key, value] of Object.entries({ shippedAt: '2026-09-03', quantity: '60', isComplete: 'false', carrier: 'test', trackingNumber: 'TEST-1', boxCount: '2' })) data.set(key, value);
     data.append('photo', new File([png], 'one.png', { type: 'image/png' }));
     data.append('photo', new File([png], 'two.png', { type: 'image/png' }));
-    data.append('deliveryNote', new File(['%PDF-test'], 'note.pdf', { type: 'application/pdf' }));
+    if (includeDeliveryNote) data.append('deliveryNote', new File(['%PDF-test'], 'note.pdf', { type: 'application/pdf' }));
     return data;
   }
   const invalid = form(); invalid.append('photo', new File(['not a png'], 'bad.png', { type: 'image/png' }));
@@ -100,9 +100,9 @@ test('multiple shipment photos are saved together and invalid batches leave no r
   db.exec("UPDATE order_items SET acceptance_status='pending' WHERE id='item-0'");
   assert.equal((await request('vendor', '/orders/order/shipments', form(), 'POST')).status, 409);
   db.exec("UPDATE order_items SET acceptance_status='approved' WHERE id='item-0'");
-  assert.equal((await request('vendor', '/orders/order/shipments', form(), 'POST')).status, 201);
-  assert.equal(db.prepare('SELECT count(*) AS n FROM shipment_attachments').get().n, 3);
-  assert.equal(objects.size, 4);
+  assert.equal((await request('vendor', '/orders/order/shipments', form(false), 'POST')).status, 201);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM shipment_attachments').get().n, 2);
+  assert.equal(objects.size, 3);
   assert.equal(db.prepare('SELECT quantity FROM shipment_records').get().quantity, 60);
 });
 
