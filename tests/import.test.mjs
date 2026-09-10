@@ -91,3 +91,12 @@ test('project name follows the imported project cell and removes the leading com
   const imported = await importPurchaseOrder(file, []);
   assert.equal(imported.projectName, '沙特利雅得');
 });
+
+test('spreadsheet with no valid product line returns the inline warning instead of discarding the import state', async () => {
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([['产品名称', '数量', '单价'], ['汇总', 0, 100]]), '采购单');
+  const file = new File([XLSX.write(book, { type: 'buffer', bookType: 'xlsx' })], '空明细采购单.xlsx');
+  const imported = await importPurchaseOrder(file, []);
+  assert.deepEqual(imported.items, []);
+  assert.deepEqual(imported.warnings, ['采购单中没有识别到有效的产品明细']);
+});

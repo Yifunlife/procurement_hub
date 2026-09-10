@@ -205,7 +205,10 @@ export async function importPurchaseOrder(file: File, suppliers: Supplier[]): Pr
     const productName = text(cell(row, columns.product));
     return productName && !summaryNames.some((name) => compact(productName).startsWith(compact(name))) && Number(cell(row, columns.quantity)) > 0;
   });
-  if (!dataRows.length) throw new Error("采购单中没有识别到有效的产品明细");
+  if (!dataRows.length) return {
+    poNumber: "", projectName: "", orderDate: "", requiredShipDate: "", supplierId: "", supplierName: "",
+    items: [], imageCount: 0, warnings: ["采购单中没有识别到有效的产品明细"],
+  };
 
   const metadataRows = rows.slice(0, headerIndex);
   const projectName = cleanProjectName(metadataValue(metadataRows, ["项目名", "项目名称", "项目"]));

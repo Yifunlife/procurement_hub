@@ -253,7 +253,7 @@ async function dashboard(request: Request, env: Env) {
             po.purchaser_name, ${internalRequirements},
             po.production_progress, po.production_note, po.carrier, po.tracking_number, po.shipped_at,
             po.created_at, po.updated_at,
-            s.code AS supplier_code, s.name AS supplier_name, s.contact_name, s.contact_info
+            s.code AS supplier_code, s.name AS supplier_name, s.contact_name, s.contact_info, s.is_online_purchase
      FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id ${scope}
      ORDER BY po.updated_at DESC`,
   );
@@ -275,7 +275,7 @@ async function dashboard(request: Request, env: Env) {
       for (const delivery of deliveries) { delivery.attachments = []; delivery.items = []; }
       const photos = (await env.DB.prepare("SELECT id,order_id,item_id,kind,purpose,file_name,content_type,created_at FROM attachments WHERE order_id=?1 AND content_type LIKE 'image/%' AND kind IN ('product_image','production_photo','scene_image') AND deleted_at IS NULL ORDER BY created_at DESC").bind(order.id).all()).results;
       visible.push(Object.fromEntries([
-        ...["id", "po_number", "supplier_id", "project_name", "supplier_code", "supplier_name", "contact_name", "contact_info", "purchaser_name", "order_date", "required_ship_date", "promised_ship_date", "estimated_ship_date", "delivery_revision", "status", "archived_at", "production_progress", "production_note", "carrier", "tracking_number", "shipped_at", "created_at", "updated_at"].map((key) => [key, order[key]]),
+        ...["id", "po_number", "supplier_id", "project_name", "supplier_code", "supplier_name", "contact_name", "contact_info", "is_online_purchase", "purchaser_name", "order_date", "required_ship_date", "promised_ship_date", "estimated_ship_date", "delivery_revision", "status", "archived_at", "production_progress", "production_note", "carrier", "tracking_number", "shipped_at", "created_at", "updated_at"].map((key) => [key, order[key]]),
         ["items", products], ["shipments", deliveries],
         ...(user.role === "warehouse" ? [["attachments", photos]] : []),
       ]));
@@ -607,8 +607,9 @@ async function createOrder(request: Request, env: Env) {
       return error("产品名称、类型或单价不正确；数量必须是大于等于 1 的整数");
     }
   }
-  const supplier = await env.DB.prepare("SELECT id FROM suppliers WHERE id = ?1 AND archived_at IS NULL").bind(body.supplierId).first();
+  const supplier = await env.DB.prepare("SELECT id, is_online_purchase FROM suppliers WHERE id = ?1 AND archived_at IS NULL").bind(body.supplierId).first<{ id: string; is_online_purchase: number }>();
   if (!supplier) return error("所选供应商不存在");
+  const onlinePurchase = supplier.is_online_purchase === 1;
   const defaults = await env.DB.prepare("SELECT terms_json, revision FROM supplier_commercial_terms WHERE supplier_id = ?1").bind(body.supplierId).first<{ terms_json: string; revision: number }>();
   if (body.supplierTermsRevision !== undefined && body.supplierTermsRevision !== (defaults?.revision || 0)) return error("供应商默认条件已更新，请重新选择供应商、核对后再创建", 409);
   const terms = parseTerms(body.commercialTerms ?? (defaults ? JSON.parse(defaults.terms_json) : {}));
@@ -632,8 +633,8 @@ async function createOrder(request: Request, env: Env) {
   const itemIds = body.items.map(() => id());
   const statements = [
     env.DB.prepare(
-      "INSERT INTO purchase_orders (id, po_number, supplier_id, project_name, order_date, required_ship_date, status, purchaser_name, internal_requirements, created_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending_confirmation', ?7, ?8, ?9, ?10, ?10)",
-    ).bind(orderId, poNumber, body.supplierId, projectName, body.orderDate, body.requiredShipDate, actor.name, body.internalRequirements?.trim() || "", actor.id, timestamp),
+      "INSERT INTO purchase_orders (id, po_number, supplier_id, project_name, order_date, required_ship_date, status, purchaser_name, internal_requirements, created_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+    ).bind(orderId, poNumber, body.supplierId, projectName, body.orderDate, body.requiredShipDate, onlinePurchase ? "ready_to_ship" : "pending_confirmation", actor.name, body.internalRequirements?.trim() || "", actor.id, timestamp),
     ...body.items.map((item, index) => {
       const quantity = Number(item.quantity);
       const unitPrice = Number(item.unitPrice);
@@ -644,8 +645,8 @@ async function createOrder(request: Request, env: Env) {
     env.DB.prepare("UPDATE purchase_orders SET commercial_terms_json = ?1, commercial_status = ?2, commercial_revision = 1 WHERE id = ?3").bind(JSON.stringify(terms), commercialStatus, orderId),
     env.DB.prepare("INSERT INTO order_settlements (order_id, net_cents, tax_cents, payable_cents) VALUES (?1, ?2, ?3, ?4)").bind(orderId, amounts.net, amounts.tax, amounts.payable),
     env.DB.prepare("INSERT INTO commercial_history (id, order_id, actual_json, status, reason, actor_id, actor_name, created_at) VALUES (?1, ?2, ?3, ?4, '创建 PO 时保存本单实际执行条件', ?5, ?6, ?7)").bind(id(), orderId, JSON.stringify(terms), commercialStatus, actor.id, actor.name, timestamp),
-    env.DB.prepare("INSERT INTO order_events (id, order_id, event_type, detail, actor_id, actor_name, created_at) VALUES (?1, ?2, 'created', '采购单已创建，等待供应商确认', ?3, ?4, ?5)")
-      .bind(id(), orderId, actor.id, actor.name, timestamp),
+    env.DB.prepare("INSERT INTO order_events (id, order_id, event_type, detail, actor_id, actor_name, created_at) VALUES (?1, ?2, 'created', ?3, ?4, ?5, ?6)")
+      .bind(id(), orderId, onlinePurchase ? "网上采购已下单，等待采购登记发货" : "采购单已创建，等待供应商确认", actor.id, actor.name, timestamp),
   ];
   try {
     await env.DB.batch(statements);
@@ -919,7 +920,6 @@ async function updatePackagingVolume(request: Request, env: Env, orderId: string
 
 async function warehouseAction(request: Request, env: Env, orderId: string, itemId: string) {
   const actor = await requireSession(request, env);
-  if (!["warehouse", "admin", "boss"].includes(actor.role)) return error("只有仓库部或管理员可以确认收货、入库", 403);
   const body = await readBody<{ action?: string; quantity?: number; requestId?: string; recordDate?: string }>(request);
   if (Object.keys(body).some(key => !["action","quantity","requestId","recordDate"].includes(key)) || !["received","stocked"].includes(body.action || "")) return error("请选择收货或入库");
   if (!Number.isSafeInteger(body.quantity) || Number(body.quantity)<1) return error("数量必须为大于等于 1 的整数");
@@ -928,8 +928,9 @@ async function warehouseAction(request: Request, env: Env, orderId: string, item
   if (!validDate(businessDate) || businessDate > businessToday()) return error("请选择不晚于今天的有效收货时间");
   const prior = await env.DB.prepare("SELECT * FROM warehouse_records WHERE id=?1").bind(body.requestId).first();
   if (prior) return prior.order_id===orderId && prior.item_id===itemId && prior.action===body.action && prior.quantity===body.quantity && prior.actor_id===actor.id && (prior.record_date || String(prior.created_at).slice(0,10))===businessDate ? json({ok:true}) : error("登记标识已使用，请刷新",409);
-  const item = await env.DB.prepare("SELECT i.id,po.order_date FROM order_items i JOIN purchase_orders po ON po.id=i.order_id WHERE i.id=?1 AND i.order_id=?2").bind(itemId,orderId).first<{id:string;order_date:string}>();
+  const item = await env.DB.prepare("SELECT i.id, po.order_date, s.is_online_purchase FROM order_items i JOIN purchase_orders po ON po.id=i.order_id JOIN suppliers s ON s.id=po.supplier_id WHERE i.id=?1 AND i.order_id=?2").bind(itemId,orderId).first<{id:string;order_date:string;is_online_purchase:number}>();
   if (!item) return error("产品不存在",404);
+  if (!["warehouse", "admin", "boss"].includes(actor.role) && !(item.is_online_purchase === 1 && canPurchase(actor.role))) return error("只有仓库部、采购或管理员可以确认网上采购的收货、入库", 403);
   if (businessDate < item.order_date) return error("收货时间不能早于下单日期");
   const timestamp = now();
   try {
@@ -1089,6 +1090,9 @@ async function updateItemProduction(request: Request, env: Env, orderId: string,
   values.push(itemId, orderId);
   const updated = await env.DB.prepare(`UPDATE order_items SET ${assignments.join(", ")} WHERE id = ?${values.length - 1} AND order_id = ?${values.length} AND shipped_quantity = 0 AND EXISTS (SELECT 1 FROM purchase_orders WHERE id = order_items.order_id AND archived_at IS NULL AND (${mayOperateBeforeConfirmation ? "1=1" : "status IN ('in_production', 'ready_to_ship', 'partial_shipped')"}))`).bind(...values).run();
   if (!updated.meta.changes) return error("产品已发货或订单状态已更新，请刷新", 409);
+  if (mayOperateBeforeConfirmation && order.status === "pending_confirmation" && body.workflowStage && body.workflowStage !== "queued") {
+    await env.DB.prepare("UPDATE purchase_orders SET status = 'in_production', updated_at = ?1 WHERE id = ?2 AND status = 'pending_confirmation' AND archived_at IS NULL").bind(timestamp, orderId).run();
+  }
   const totals = await env.DB.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN workflow_stage IN ('production_complete', 'ready_to_ship', 'shipment_complete') THEN 1 ELSE 0 END) AS completed FROM order_items WHERE order_id = ?1")
     .bind(orderId).first<{ total: number; completed: number }>();
   const total = Number(totals?.total || 0);
@@ -1110,17 +1114,26 @@ async function acceptProduct(request: Request, env: Env, orderId: string, itemId
   const reason = actor.role === "admin" && body.decision === "approved" ? "管理员直接验收" : typeof body.reason === "string" ? body.reason.trim() : "";
   if (reason.length > 2000 || (body.decision === "rejected" && !reason)) return error("退回整改必须填写原因，最多 2000 字");
   const reviewId = id(), timestamp = now();
-  const [result] = await env.DB.batch([
+  const mayOperateBeforeConfirmation = actor.role === "admin" || actor.supplier_operations === 1;
+  const [, result] = await env.DB.batch([
+    env.DB.prepare(`UPDATE purchase_orders SET status = 'in_production', updated_at = ?1
+      WHERE id = ?2 AND status = 'pending_confirmation' AND archived_at IS NULL AND ?3 = 1
+        AND EXISTS (SELECT 1 FROM order_items i WHERE i.id = ?4 AND i.order_id = ?2 AND i.production_revision = ?5
+          AND i.acceptance_status = 'pending' AND i.shipped_quantity = 0 AND i.workflow_stage IN ('production_complete','ready_to_ship')
+          AND (i.production_photo_waived = 1 OR EXISTS (SELECT 1 FROM attachments WHERE item_id = i.id AND kind = 'production_photo' AND deleted_at IS NULL)))`)
+      .bind(timestamp, orderId, mayOperateBeforeConfirmation ? 1 : 0, itemId, body.revision),
     env.DB.prepare(`INSERT INTO product_acceptances (id,order_id,item_id,production_revision,decision,reason,photo_ids,actor_id,actor_name,created_at)
       SELECT ?1,i.order_id,i.id,i.production_revision,?4,?5,
         (SELECT json_group_array(id) FROM attachments WHERE item_id = i.id AND kind = 'production_photo' AND deleted_at IS NULL),?6,?7,?8
       FROM order_items i JOIN purchase_orders p ON p.id = i.order_id
       WHERE i.id = ?2 AND i.order_id = ?3 AND i.production_revision = ?9 AND i.acceptance_status = 'pending'
         AND i.shipped_quantity = 0 AND p.archived_at IS NULL
-        AND (?10 = 1 OR (i.workflow_stage IN ('production_complete','ready_to_ship')
+        AND (?10 = 1 OR (?11 = 1 AND i.workflow_stage IN ('production_complete','ready_to_ship')
+          AND p.status IN ('pending_confirmation','in_production','ready_to_ship')
+          AND (i.production_photo_waived = 1 OR EXISTS (SELECT 1 FROM attachments WHERE item_id = i.id AND kind = 'production_photo' AND deleted_at IS NULL))) OR (i.workflow_stage IN ('production_complete','ready_to_ship')
           AND p.status IN ('in_production','ready_to_ship')
           AND (i.production_photo_waived = 1 OR EXISTS (SELECT 1 FROM attachments WHERE item_id = i.id AND kind = 'production_photo' AND deleted_at IS NULL))))`)
-      .bind(reviewId, itemId, orderId, body.decision, reason, actor.id, actor.name, timestamp, body.revision, actor.role === "admin" && body.decision === "approved" ? 1 : 0),
+      .bind(reviewId, itemId, orderId, body.decision, reason, actor.id, actor.name, timestamp, body.revision, actor.role === "admin" && body.decision === "approved" ? 1 : 0, mayOperateBeforeConfirmation ? 1 : 0),
     env.DB.prepare(`INSERT INTO order_events (id,order_id,event_type,detail,actor_id,actor_name,created_at)
       SELECT ?1,?2,'product_acceptance',?3 || i.product_name || ?4,?5,?6,?7
       FROM product_acceptances a JOIN order_items i ON i.id=a.item_id WHERE a.id=?8`)
@@ -1131,11 +1144,13 @@ async function acceptProduct(request: Request, env: Env, orderId: string, itemId
 }
 
 async function createShipment(request: Request, env: Env, orderId: string) {
-  const actor = await requireSession(request, env, "supplier");
+  const actor = await requireSession(request, env);
   if (!(await canAccessOrder(env, actor, orderId))) return error("采购单不存在", 404);
-  const order = await env.DB.prepare("SELECT status, shipment_status, order_date FROM purchase_orders WHERE id = ?1")
-    .bind(orderId).first<{ status: string; shipment_status: string; order_date: string }>();
+  const order = await env.DB.prepare("SELECT po.status, po.shipment_status, po.order_date, s.is_online_purchase FROM purchase_orders po JOIN suppliers s ON s.id=po.supplier_id WHERE po.id = ?1")
+    .bind(orderId).first<{ status: string; shipment_status: string; order_date: string; is_online_purchase: number }>();
   if (!order || !["pending_confirmation", "in_production", "ready_to_ship"].includes(order.status) || order.shipment_status === "complete") return error("当前状态不能登记发货", 409);
+  const onlinePurchase = order.is_online_purchase === 1;
+  if (!(onlinePurchase ? canPurchase(actor.role) : canOperateSupplier(actor))) return error("当前账号不能登记发货", 403);
   if (order.status !== "ready_to_ship") {
     const eligible = await env.DB.prepare("SELECT 1 FROM order_items WHERE order_id = ?1 AND shipped_quantity < quantity AND acceptance_status = 'approved' AND workflow_stage IN ('production_complete','ready_to_ship') LIMIT 1").bind(orderId).first();
     if (!eligible) return error("请先完成产品验收并进入待发货", 409);
@@ -1152,7 +1167,7 @@ async function createShipment(request: Request, env: Env, orderId: string) {
   const deliveryNotes = form.getAll("deliveryNote");
   if (!shippedAt || !Number.isInteger(quantity) || quantity < 1 || !carrier || !trackingNumber || !Number.isInteger(boxCount) || boxCount <= 0) return error("请完整填写发货登记，发货数量和箱数必须是整数");
   if (shippedAt < order.order_date) return error("实际发货日期不能早于下单日期");
-  if (!deliveryNotes.length) return error("请上传送货单附件");
+  if (!onlinePurchase && !deliveryNotes.length) return error("请上传送货单附件");
   const files: { file: File; buffer: ArrayBuffer; kind: string }[] = [];
   for (const [kind, entries] of [["shipment_photo", photos], ["delivery_note", deliveryNotes]] as const) {
     for (const file of entries) {
@@ -1171,10 +1186,10 @@ async function createShipment(request: Request, env: Env, orderId: string) {
   if (lines.reduce((sum, line) => sum + line.quantity, 0) !== quantity) return error("产品明细数量与本次发货总数不一致");
   const productRows = (await env.DB.prepare("SELECT id, quantity, shipped_quantity, acceptance_status, workflow_stage, production_photo_waived FROM order_items WHERE order_id = ?1").bind(orderId).all()).results as Array<{ id: string; quantity: number; shipped_quantity: number; acceptance_status: string; workflow_stage: string; production_photo_waived: number }>;
   for (const line of lines) { const product = productRows.find(item => item.id === line.itemId); if (!product || line.quantity > product.quantity - product.shipped_quantity) return error("产品不属于本单或本次发货超过产品剩余数量"); }
-  if (lines.some(line => productRows.find(item => item.id === line.itemId)?.acceptance_status !== "approved")) return error("本次发货产品尚未通过采购验收，不能发货", 409);
-  if (lines.some(line => !["production_complete", "ready_to_ship"].includes(productRows.find(item => item.id === line.itemId)?.workflow_stage || ""))) return error("本次发货产品尚未进入待发货，不能发货", 409);
+  if (!onlinePurchase && lines.some(line => productRows.find(item => item.id === line.itemId)?.acceptance_status !== "approved")) return error("本次发货产品尚未通过采购验收，不能发货", 409);
+  if (!onlinePurchase && lines.some(line => !["production_complete", "ready_to_ship"].includes(productRows.find(item => item.id === line.itemId)?.workflow_stage || ""))) return error("本次发货产品尚未进入待发货，不能发货", 409);
   const photographedItems = (await env.DB.prepare("SELECT DISTINCT item_id FROM attachments WHERE order_id = ?1 AND kind = 'production_photo' AND deleted_at IS NULL AND item_id IS NOT NULL").bind(orderId).all()).results;
-  if (lines.some(line => !photographedItems.some(photo => photo.item_id === line.itemId) && productRows.find(item => item.id === line.itemId)?.production_photo_waived !== 1)) return error("本次发货产品缺少实拍照片，且未记录“未提供实物图”", 409);
+  if (!onlinePurchase && lines.some(line => !photographedItems.some(photo => photo.item_id === line.itemId) && productRows.find(item => item.id === line.itemId)?.production_photo_waived !== 1)) return error("本次发货产品缺少实拍照片，且未记录“未提供实物图”", 409);
   const totals = await env.DB.prepare(
     `SELECT (SELECT COALESCE(SUM(quantity), 0) FROM order_items WHERE order_id = ?1) AS ordered,
             (SELECT COALESCE(SUM(quantity), 0) FROM shipment_records WHERE order_id = ?1) AS shipped`,

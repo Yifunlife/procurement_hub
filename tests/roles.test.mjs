@@ -16,6 +16,21 @@ test('admin can select production stages before supplier confirmation; other rol
  assert.equal((await request('buyer',path,{workflowStage:'in_production'})).status,404);
 });
 
+test('procurement supplier operations synchronizes pending orders and can accept completed products', async () => {
+ const {db,request}=fixture();
+ db.exec("INSERT INTO staff_permissions(user_id,supplier_operations) VALUES ('buyer',1)");
+ const photo=new FormData();
+ photo.set('kind','production_photo'); photo.set('itemId','item-0');
+ photo.set('file',new File([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF9kAAAAASUVORK5CYII=','base64')],'real.png',{type:'image/png'}));
+ assert.equal((await request('buyer','/orders/order/attachments',photo,'POST')).status,201);
+ const production='/orders/order/items/item-0/production';
+ assert.equal((await request('buyer',production,{workflowStage:'production_complete'},'PATCH')).status,200);
+ assert.equal(db.prepare("SELECT status FROM purchase_orders WHERE id='order'").get().status,'in_production');
+ const revision=db.prepare("SELECT production_revision FROM order_items WHERE id='item-0'").get().production_revision;
+ assert.equal((await request('buyer','/orders/order/items/item-0/acceptance',{decision:'approved',reason:'',revision},'POST')).status,200);
+ assert.equal(db.prepare("SELECT status FROM purchase_orders WHERE id='order'").get().status,'ready_to_ship');
+});
+
 test('corrections reverse in dependency order, preserve records, reject stale retries and permit re-entry',async()=>{
  const {db,request}=fixture(); db.exec("INSERT INTO staff_roles VALUES('buyer','admin')");
  const base='/orders/order/items/item-0';

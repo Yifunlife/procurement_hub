@@ -357,6 +357,26 @@ test('supplier defaults copy into new PO, supplier edits never touch its snapsho
   assert.equal(db.prepare('SELECT payable_cents FROM order_settlements WHERE order_id=?').get((await unverified.json()).orderId).payable_cents, 10000);
 });
 
+test('online purchase skips supplier workflow and lets procurement ship, receive, and stock', async () => {
+  const { db, request } = fixture();
+  const created = await request('buyer', '/orders', poBody('ONLINE-001', { supplierId: 'supplier-online-purchase' }), 'POST');
+  assert.equal(created.status, 201);
+  const { orderId, itemIds } = await created.json();
+  const itemId = itemIds[0];
+  assert.equal(db.prepare('SELECT status FROM purchase_orders WHERE id=?').get(orderId).status, 'ready_to_ship');
+
+  const shipment = new FormData();
+  for (const [key, value] of Object.entries({ shippedAt: '2026-09-03', quantity: '1', isComplete: 'true', carrier: '淘宝物流', trackingNumber: 'ONLINE-TRACK', boxCount: '1', items: JSON.stringify([{ itemId, quantity: 1 }]) })) shipment.set(key, value);
+  assert.equal((await request('buyer', `/orders/${orderId}/shipments`, shipment, 'POST')).status, 201);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM shipment_attachments WHERE order_id=?').get(orderId).n, 0);
+
+  assert.equal((await request('buyer', `/orders/${orderId}/items/${itemId}/warehouse`, { action: 'received', quantity: 1, recordDate: '2026-09-03', requestId: crypto.randomUUID() }, 'POST')).status, 200);
+  assert.equal((await request('buyer', `/orders/${orderId}/items/${itemId}/warehouse`, { action: 'stocked', quantity: 1, requestId: crypto.randomUUID() }, 'POST')).status, 200);
+  const item = db.prepare('SELECT received_quantity, stocked_quantity FROM order_items WHERE id=?').get(itemId);
+  assert.equal(item.received_quantity, 1);
+  assert.equal(item.stocked_quantity, 1);
+});
+
 test('old PO can be verified without copying current defaults; changes retain both snapshots', async () => {
   const { db, request } = fixture();
   assert.equal((await verifyTerms(request)).status, 200);

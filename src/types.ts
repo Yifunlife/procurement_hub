@@ -31,6 +31,7 @@ export type User = {
 };
 
 export type Supplier = {
+  is_online_purchase: number;
   commercial_terms: CommercialTerms | null;
   commercial_revision: number;
   id: string;
@@ -153,6 +154,7 @@ export type OrderReminder = {
 };
 
 export type PurchaseOrder = {
+  is_online_purchase: number;
   commercial_terms: CommercialTerms | null;
   commercial_revision: number;
   commercial_status: "unverified" | "confirmed";

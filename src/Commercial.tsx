@@ -88,7 +88,13 @@ export function FinancePanel({ readOnly = false }: { readOnly?: boolean }) {
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState(""), [query, setQuery] = useState("");
   const load = async () => { try { const result = await api<{ orders: FinanceOrder[] }>("/api/finance"); setOrders(result.orders); setError(""); } catch (caught) { setError(caught instanceof Error ? caught.message : "读取失败"); } };
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => {
+      if (!document.hidden && !document.querySelector("dialog[open]") && !document.activeElement?.matches("input, textarea, select")) void load();
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, []);
   const filtered = orders?.filter((entry) => `${entry.po_number} ${entry.project_name} ${entry.supplier_name}`.toLowerCase().includes(query.toLowerCase())) || [];
   const projectOrders = selectedProject ? filtered.filter((entry) => entry.project_name === selectedProject) : filtered;
   const exportOrders = projectOrders.filter((entry) => checkedIds.has(entry.id));

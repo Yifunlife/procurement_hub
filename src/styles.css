@@ -751,6 +751,9 @@ label small { font-size: 12px; line-height: 1.5; color: var(--muted); font-weigh
 .import-summary strong { font-size: 12px; }
 .import-summary small { color: #52675f; font-size: 10px; line-height: 1.5; }
 .import-summary ul { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 16px; margin: 0; padding: 0; color: #87532c; font-size: 10px; list-style-position: inside; }
+.import-unrecognized-warning { margin: 14px 0 0; padding: 11px 14px; border-radius: 9px; background: var(--signal-soft); color: var(--ink); font-size: 13px; font-weight: 700; }
+.online-purchase-shipment { display: grid; place-items: center; gap: 5px; padding: 8px; text-align: center; }
+.online-purchase-shipment small { color: var(--muted); }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .form-grid.three { grid-template-columns: repeat(3, 1fr); }
 .order-form > .form-grid.three { gap: 14px 18px; }

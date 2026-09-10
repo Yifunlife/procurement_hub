@@ -251,6 +251,7 @@ function Workbench({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [currentProject, setCurrentProject] = useState(initialParams.get("project") || "尚未选择项目");
 
   useEffect(() => {
@@ -292,18 +293,26 @@ function Workbench({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   useEffect(() => { void refresh(false); }, []);
   useEffect(() => {
-    if (user.role === "finance" || view !== "orders") return;
+    const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("yifun-procurement-data");
+    const sync = () => { void refresh(); setRefreshVersion(current => current + 1); };
+    const announce = () => { channel?.postMessage("changed"); sync(); };
+    window.addEventListener("procurement:data-changed", announce);
+    channel?.addEventListener("message", sync);
+    return () => { window.removeEventListener("procurement:data-changed", announce); channel?.removeEventListener("message", sync); channel?.close(); };
+  }, [user.role, selectedId]);
+  useEffect(() => {
+    if (user.role === "finance" || ["new-order", "new-supplier", "edit-supplier", "supplier-detail", "account"].includes(view)) return;
     let active = true, loading = false;
     const sync = async () => {
       if (loading || document.hidden || document.querySelector("dialog[open]") || document.activeElement?.matches("input, textarea, select")) return;
       loading = true;
       try {
         const next = await api<DashboardData>("/api/dashboard");
-        if (active) setData(current => current ? { ...current, orders: next.orders } : next);
+        if (active) { setData(next); setRefreshVersion(current => current + 1); }
       } catch { /* Keep the last loaded order until the next refresh. */ }
       finally { loading = false; }
     };
-    const timer = window.setInterval(() => void sync(), 15000);
+    const timer = window.setInterval(() => void sync(), 8000);
     window.addEventListener("focus", sync);
     return () => { active = false; window.clearInterval(timer); window.removeEventListener("focus", sync); };
   }, [view, user.role]);
@@ -370,8 +379,8 @@ function Workbench({ user, onLogout }: { user: User; onLogout: () => void }) {
           {canPurchase(user.role) && view === "suppliers" && <button className="primary" onClick={() => setView("new-supplier")}><Plus size={18} />新建供应商</button>}
         </header>
         {error && <div className="global-error" role="alert">{error}<button onClick={() => refresh()}>重试</button></div>}
-        {view === "ceo" && ["boss", "admin"].includes(user.role) && <CeoDashboard purchaseOrders={data.orders} />}
-        {view === "finance" && hasFinanceAccess && <FinancePanel readOnly={user.role === "office"} />}
+        {view === "ceo" && ["boss", "admin"].includes(user.role) && <CeoDashboard key={refreshVersion} purchaseOrders={data.orders} />}
+        {view === "finance" && hasFinanceAccess && <FinancePanel key={refreshVersion} readOnly={user.role === "office"} />}
         {view === "staff" && ["boss", "admin", "office"].includes(user.role) && <div className={"staff-scroll" + (user.role === "office" ? " office-readonly" : "")}><StaffPanel onLogout={onLogout} /></div>}
         {view === "account" && <Account user={user} onLogout={onLogout} />}
         {view === "new-order" && <NewOrder suppliers={data.suppliers} user={user} onCancel={() => setView("orders")} onDone={(id, message) => { setSelectedId(id); void done(message || "采购单已创建，等待供应商确认"); }} />}
@@ -403,7 +412,13 @@ function CeoDashboard({ purchaseOrders }: { purchaseOrders: PurchaseOrder[] }) {
     try { setFinanceOrders((await api<{ orders: FinanceOrder[] }>("/api/finance")).orders); setError(""); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "看板数据读取失败"); }
   };
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => {
+      if (!document.hidden && !document.querySelector("dialog[open]") && !document.activeElement?.matches("input, textarea, select")) void load();
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, []);
   const today = new Date();
   const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   const month = localDate(today).slice(0, 7);
@@ -662,7 +677,8 @@ function ProductAcceptanceCard({ order, item, user, onChanged }: { order: Purcha
     finally { setBusy(false); }
   }
   const photos = order.attachments.filter(file => file.item_id === item.id && file.kind === "production_photo");
-  const reviewable = !order.archived_at && item.shipped_quantity === 0 && item.acceptance_status === "pending" && (user.role === "admin" || ((photos.length > 0 || item.production_photo_waived === 1) && ["production_complete", "ready_to_ship"].includes(item.workflow_stage) && ["in_production", "ready_to_ship", "partial_shipped"].includes(order.status)));
+  const mayOperateBeforeConfirmation = user.role === "admin" || user.supplier_operations === 1;
+  const reviewable = !order.archived_at && item.shipped_quantity === 0 && item.acceptance_status === "pending" && ((photos.length > 0 || item.production_photo_waived === 1) && ["production_complete", "ready_to_ship"].includes(item.workflow_stage) && (mayOperateBeforeConfirmation ? ["pending_confirmation", "in_production", "ready_to_ship", "partial_shipped"].includes(order.status) : ["in_production", "ready_to_ship", "partial_shipped"].includes(order.status)));
   const status = item.shipped_quantity > 0 ? "已发货 · 只读" : item.acceptance_status === "approved" ? "已接受 · 允许发货" : item.acceptance_status === "rejected" ? "已退回 · 等待整改" : reviewable ? "待采购验收" : "等待供应商完成生产并提供实图状态";
   async function decide(decision: "approved" | "rejected") {
     setBusy(true); setError("");
@@ -711,7 +727,8 @@ function WarehouseFields({ order, item, user, onChanged }: { order: PurchaseOrde
   const remaining = Math.max(0, (user.role === "admin" ? item.quantity : item.shipped_quantity) - received), toStock = Math.max(0, received - stocked);
   const [quantity, setQuantity] = useState(""), [receiptDate, setReceiptDate] = useState(today), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const attempt = useRef({ signature: "", id: "" });
-  const permitted = ["warehouse","boss","admin"].includes(user.role);
+  const onlinePurchase = order.is_online_purchase === 1;
+  const permitted = ["warehouse","boss","admin"].includes(user.role) || (onlinePurchase && canPurchase(user.role));
   const active = !order.archived_at && (user.role === "admin" || ["partial_shipped","ready_to_ship","shipped","received","completed"].includes(order.status));
   const valid = /^[0-9]+$/.test(quantity) && Number.isSafeInteger(Number(quantity)) && Number(quantity)>=1 && Number(quantity)<=remaining;
   const cancellingReceipt=received>0 && !quantity;
@@ -738,7 +755,7 @@ function WarehouseFields({ order, item, user, onChanged }: { order: PurchaseOrde
   return <>
     <div role="cell" className="warehouse-quantity"><strong>{received>0 && received<item.quantity ? "补登数量" : "实际收货数量"}</strong>
       {permitted && !order.archived_at && received<item.quantity ? <input aria-label={item.product_name+(received>0 ? " 补登数量" : " 实际收货数量")} type="number" min="1" step="1" max={remaining || undefined} inputMode="numeric" value={quantity} onChange={event=>setQuantity(event.target.value)} disabled={busy} placeholder="整数 ≥ 1" /> : <p>{received} {item.unit}</p>}
-      <small>累计已收 {received} / {item.quantity}</small><small>{user.role === "admin" ? "可登记收货" : "已发未收"} {remaining}</small>
+      <small>累计已收 {received} / {item.quantity}</small><small>{permitted ? "可登记收货" : "已发未收"} {remaining}</small>
       {quantity && !valid && <small className="form-error">请输入 1–{remaining} 的整数</small>}
     </div>
     <div role="cell" className="warehouse-receipt-date"><strong>收货时间</strong>
@@ -786,21 +803,21 @@ function OrderDetail({ order, suppliers, user, onChanged }: { order: PurchaseOrd
       </div>
       {!order.archived_at && <div className="order-guidance-row">
         {displayOrder.reminders[0] ? <div className={`reminder-banner ${displayOrder.reminders[0].reminder_type}`}><CalendarClock size={19} /><div><strong>自动催单</strong><p>{displayOrder.reminders[0].message}</p></div></div> : <div />}
-        {canPurchase(user.role) && <ProcurementAcceptance order={order} onChanged={onChanged} />}
+        {canPurchase(user.role) && !order.is_online_purchase && <ProcurementAcceptance order={order} onChanged={onChanged} />}
       </div>}
-      <StageRail order={order} />
+      {!order.is_online_purchase && <StageRail order={order} />}
       <div className="detail-tabs" role="tablist"><button role="tab" aria-selected={tab === "detail"} className={tab === "detail" ? "active" : ""} onClick={() => setTab("detail")}>订单详情</button><button role="tab" aria-selected={tab === "records"} className={tab === "records" ? "active" : ""} onClick={() => setTab("records")}>操作记录 <span>{displayOrder.events.length}</span></button></div>
       {tab === "detail" ? <>
         <ProductTable order={displayOrder} user={user} onChanged={onChanged} />
         {canPurchase(user.role) && order.shipments.length > 0 && <ShipmentRecords order={order} />}
-        {(user.role === "admin" || user.supplier_operations === 1) && !order.archived_at && ["pending_confirmation", "in_production", "ready_to_ship", "partial_shipped"].includes(order.status) && <details className="supplier-operation-disclosure"><summary>采购代供应商操作（内部试用）</summary><ActionPanel order={order} user={user} onChanged={onChanged} supplierOperations /></details>}
+        {!order.is_online_purchase && (user.role === "admin" || user.supplier_operations === 1) && !order.archived_at && ["pending_confirmation", "in_production", "ready_to_ship", "partial_shipped"].includes(order.status) && <details className="supplier-operation-disclosure"><summary>采购代供应商操作（内部试用）</summary><ActionPanel order={order} user={user} onChanged={onChanged} supplierOperations /></details>}
         {(user.role === "supplier" || user.role === "office") && <ShipmentRecords order={order} />}
         <OrderFacts order={order} />
         <DeliverySchedule order={displayOrder} user={user} onChanged={onChanged} />
         {canViewAmounts(user.role) ? <OrderCommercial order={order} user={user} onChanged={onChanged} /> : <section className="detail-section commercial-block"><div className="section-heading"><h3>商务与金额</h3></div><p className="form-help">当前部门无权查看商务及金额信息。</p></section>}
         <Attachments order={displayOrder} readOnly={["office", "engineering", "warehouse"].includes(user.role)} />
         <SceneImages order={displayOrder} user={user} onChanged={onChanged} />
-        {order.archived_at ? <><ShipmentRecords order={order} /><p className="form-help">本单已作废，只读留档。编号、产品明细、交期历史、发货记录与附件均保留。</p></> : user.role === "supplier" ? <ActionPanel order={order} user={user} onChanged={onChanged} /> : canPurchase(user.role) && !["shipped", "received", "completed"].includes(order.status) && <ActionPanel order={order} user={user} onChanged={onChanged} />}
+        {order.archived_at ? <><ShipmentRecords order={order} /><p className="form-help">本单已作废，只读留档。编号、产品明细、交期历史、发货记录与附件均保留。</p></> : user.role === "supplier" ? <ActionPanel order={order} user={user} onChanged={onChanged} /> : canPurchase(user.role) && !order.is_online_purchase && !["shipped", "received", "completed"].includes(order.status) && <ActionPanel order={order} user={user} onChanged={onChanged} />}
       </> : <EventTimeline order={displayOrder} />}
     </div>
   );
@@ -910,12 +927,13 @@ function BatchStockButton({order,user,selectedIds,busy,onBusy,onSaved,onChanged}
 }
 
 function ProductTable({ order, user, onChanged }: { order: PurchaseOrder; user: User; onChanged: (message: string) => void | Promise<void> }) {
+  const onlinePurchase = order.is_online_purchase === 1;
   const progress = productionTotals(order);
   const meterTone = ["received", "completed"].includes(order.status) ? "received" : ["partial_shipped", "shipped"].includes(order.status) ? "shipped" : !["shipped", "received", "completed"].includes(order.status) && daysToShip(order) >= 0 && daysToShip(order) <= 3 ? "urgent" : order.status === "ready_to_ship" || progress.progress === 100 ? "ready" : order.status === "in_production" ? "production" : "pending";
   const [selectedItems,setSelectedItems]=useState<string[]>([]);
   const [batchBusy,setBatchBusy]=useState(false), [batchResult,setBatchResult]=useState("");
   const batchLock=useRef(false);
-  const selectable=order.items.filter(item=>canPurchase(user.role) && !order.archived_at && item.shipped_quantity===0 && item.acceptance_status==="pending" && (user.role==="admin" || (["in_production","ready_to_ship","partial_shipped"].includes(order.status) && ["production_complete","ready_to_ship"].includes(item.workflow_stage) && (item.production_photo_waived===1 || order.attachments.some(file=>file.item_id===item.id && file.kind==="production_photo")))));
+  const selectable=onlinePurchase ? [] : order.items.filter(item=>canPurchase(user.role) && !order.archived_at && item.shipped_quantity===0 && item.acceptance_status==="pending" && (user.role==="admin" || (["in_production","ready_to_ship","partial_shipped"].includes(order.status) && ["production_complete","ready_to_ship"].includes(item.workflow_stage) && (item.production_photo_waived===1 || order.attachments.some(file=>file.item_id===item.id && file.kind==="production_photo")))));
   const selected=selectable.filter(item=>selectedItems.includes(item.id));
   async function acceptSelected() {
     if(batchLock.current || !selected.length) return;
@@ -944,15 +962,15 @@ function ProductTable({ order, user, onChanged }: { order: PurchaseOrder; user: 
   const finishCloseImage = () => { setExpandedImage(null); requestAnimationFrame(() => imageTrigger.current?.focus()); };
 
   return <section className="detail-section product-workflow-section">
-    <div className="section-heading"><div><h3><button type="button" className="product-details-toggle" aria-expanded={detailsOpen} aria-controls={`product-details-${order.id}`} onClick={() => setDetailsOpen(!detailsOpen)}><ChevronDown size={18} aria-hidden="true" />采购产品明细<span>{detailsOpen ? "收起" : "展开"}</span></button></h3><p hidden={!detailsOpen}>每个 SKU 只保留一个当前节点，采购端与供应商端同步显示。</p></div><div className="batch-acceptance-actions"><span>{progress.completed} / {progress.total} 项生产完成</span>{canSelectProducts && <SelectAllProducts items={order.items} selectedIds={selectedItems} disabled={batchBusy} onChange={setSelectedItems} />}{canPurchase(user.role) && !order.archived_at && <button type="button" className="primary" disabled={batchBusy || !selected.length} onClick={()=>void acceptSelected()}>{batchBusy ? "正在验收…" : `批量验收（${selected.length}）`}</button>}{["admin","boss","warehouse"].includes(user.role) && !order.archived_at && <BatchStockButton order={order} user={user} selectedIds={selectedItems} busy={batchBusy} onBusy={setBatchBusy} onSaved={id=>setSelectedItems(current=>current.filter(value=>value!==id))} onChanged={onChanged} />}<span role="status">{batchResult}</span></div></div>
-    <div className={`production-meter tone-${meterTone}`} role="progressbar" aria-label="产品生产进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.progress}><span style={{ width: progress.progress + "%" }} /><strong>{progress.progress}%</strong></div>
+    <div className="section-heading"><div><h3><button type="button" className="product-details-toggle" aria-expanded={detailsOpen} aria-controls={`product-details-${order.id}`} onClick={() => setDetailsOpen(!detailsOpen)}><ChevronDown size={18} aria-hidden="true" />采购产品明细<span>{detailsOpen ? "收起" : "展开"}</span></button></h3><p hidden={!detailsOpen}>{onlinePurchase ? "网上采购由采购直接登记物流发货，采购或仓库收货并入库。" : "每个 SKU 只保留一个当前节点，采购端与供应商端同步显示。"}</p></div>{!onlinePurchase && <div className="batch-acceptance-actions"><span>{progress.completed} / {progress.total} 项生产完成</span>{canSelectProducts && <SelectAllProducts items={order.items} selectedIds={selectedItems} disabled={batchBusy} onChange={setSelectedItems} />}{canPurchase(user.role) && !order.archived_at && <button type="button" className="primary" disabled={batchBusy || !selected.length} onClick={()=>void acceptSelected()}>{batchBusy ? "正在验收…" : `批量验收（${selected.length}）`}</button>}{["admin","boss","warehouse"].includes(user.role) && !order.archived_at && <BatchStockButton order={order} user={user} selectedIds={selectedItems} busy={batchBusy} onBusy={setBatchBusy} onSaved={id=>setSelectedItems(current=>current.filter(value=>value!==id))} onChanged={onChanged} />}<span role="status">{batchResult}</span></div>}</div>
+    {!onlinePurchase && <div className={`production-meter tone-${meterTone}`} role="progressbar" aria-label="产品生产进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.progress}><span style={{ width: progress.progress + "%" }} /><strong>{progress.progress}%</strong></div>}
     <div className="product-workflow-scroll" id={`product-details-${order.id}`} hidden={!detailsOpen} tabIndex={0} aria-label="产品明细表，小屏幕可横向滚动">
       <div className="product-workflow-table" role="table" aria-label="采购产品明细与生产进度">
         <div className="product-workflow-head" role="row">
           <span role="columnheader">选择</span><span role="columnheader">型号</span><span role="columnheader">产品名称</span><span role="columnheader">产品图</span><span role="columnheader">数量</span><span role="columnheader">单价</span><span role="columnheader">金额</span><span role="columnheader">完成时间</span>
-          {PRODUCT_WORKFLOW_STAGES.map((stage) => <span role="columnheader" key={stage.id}>{stage.label}</span>)}
+          {onlinePurchase ? <span role="columnheader">物流发货</span> : PRODUCT_WORKFLOW_STAGES.map((stage) => <span role="columnheader" key={stage.id}>{stage.label}</span>)}
         </div>
-        {order.items.map((item) => <ProductWorkflowRow key={item.id} order={order} item={item} user={user} onChanged={onChanged} onExpandImage={openImage} selection={canSelectProducts ? {checked:selectedItems.includes(item.id),disabled:batchBusy,onChange:(checked:boolean)=>setSelectedItems(current=>checked ? [...new Set([...current,item.id])] : current.filter(id=>id!==item.id))} : undefined} batchBusy={batchBusy} />)}
+        {order.items.map((item) => <ProductWorkflowRow key={item.id} order={order} item={item} user={user} onChanged={onChanged} onExpandImage={openImage} selection={!onlinePurchase && canSelectProducts ? {checked:selectedItems.includes(item.id),disabled:batchBusy,onChange:(checked:boolean)=>setSelectedItems(current=>checked ? [...new Set([...current,item.id])] : current.filter(id=>id!==item.id))} : undefined} batchBusy={batchBusy} />)}
       </div>
     </div>
     {expandedImage && <ImageLightbox image={expandedImage} onClosed={finishCloseImage} />}
@@ -1013,6 +1031,7 @@ function ProductWorkflowRow({ order, item, user, onChanged, onExpandImage, selec
   selection?: { checked: boolean; disabled: boolean; onChange: (checked: boolean) => void };
   batchBusy?: boolean;
 }) {
+  const onlinePurchase = order.is_online_purchase === 1;
   const realPhotos = order.attachments.filter(attachment => attachment.item_id === item.id && attachment.kind === "production_photo");
   const images = item.shipped_quantity > 0 ? realPhotos : order.attachments.filter(attachment => attachment.item_id === item.id && attachment.kind === "product_image");
   const [photoStage, setPhotoStage] = useState<ProductWorkflowStage | "photos" | null>(null);
@@ -1066,22 +1085,22 @@ function ProductWorkflowRow({ order, item, user, onChanged, onExpandImage, selec
     <span role="cell" className="workflow-money">{canViewAmounts(user.role) ? `¥ ${money.format(item.unit_price)}` : "—"}</span>
     <span role="cell" className="workflow-money">{canViewAmounts(user.role) ? `¥ ${money.format(item.amount)}` : "—"}</span>
     <span role="cell">{canEdit ? <input className="workflow-date" type="date" min={order.order_date} value={completionDate} disabled={busy} aria-label={item.product_name + " 完成时间"} onChange={(event) => { const value = event.currentTarget.value; setCompletionDate(value); void save({ completionDate: value || null }, item.product_name + " 完成时间已更新"); }} /> : <time>{dateText(item.completion_date)}</time>}</span>
-    {PRODUCT_WORKFLOW_STAGES.map((stage) => { const checked = workflowStage === stage.id || (stage.id === "production_complete" && workflowStage === "ready_to_ship"); return <label role="cell" className={"workflow-stage-check" + (checked ? " checked" : "")} key={stage.id} title={stage.label}>
+    {onlinePurchase ? <span role="cell" className="online-purchase-shipment">{item.shipped_quantity >= item.quantity ? <><strong>已登记发货</strong><small>已发 {item.shipped_quantity} / {item.quantity}</small></> : canPurchase(user.role) && !order.archived_at ? <button type="button" className="secondary" disabled={busy} onClick={() => setShipmentOpen(true)}>登记发货</button> : <><strong>待采购登记</strong><small>已发 {item.shipped_quantity} / {item.quantity}</small></>}</span> : PRODUCT_WORKFLOW_STAGES.map((stage) => { const checked = workflowStage === stage.id || (stage.id === "production_complete" && workflowStage === "ready_to_ship"); return <label role="cell" className={"workflow-stage-check" + (checked ? " checked" : "")} key={stage.id} title={stage.label}>
       <input type="radio" name={"workflow-" + item.id} value={stage.id} checked={checked} disabled={!canEdit || busy || (stage.id === "shipment_complete" && workflowStage !== "ready_to_ship" && workflowStage !== "production_complete")} aria-label={item.product_name + "，" + stage.label} onChange={() => { if (stage.id === "shipment_complete") { if (item.acceptance_status !== "approved") setRowError("请先完成采购验收，再登记发货"); else setShipmentOpen(true); } else if (stage.id === "production_complete") setPhotoStage(stage.id); else { setWorkflowStage(stage.id); void save({ workflowStage: stage.id }, item.product_name + " 已更新为" + stage.label); } }} />
       <span aria-hidden="true">{checked && <Check size={14} />}</span>
       <em className="sr-only">{stage.label}</em>
     </label>; })}
   </div><div className="product-followup-row" role="row" aria-label={item.product_name + " 实拍验收与仓库记录"}>
     <div role="cell" className="workflow-selection-spacer" aria-hidden="true" />
-    <div role="cell"><strong>产品实物图</strong>{canUpload ? <button className="secondary" type="button" onClick={() => setPhotoStage("photos")}>上传实拍照片</button> : <small>{realPhotos.length ? realPhotos.length + " 张实拍" : item.production_photo_waived === 1 ? "未提供实物图" : "暂无实拍照片"}</small>}{item.production_photo_waived === 1 && <small className="photo-waived-status">已记录：未提供实物图</small>}<div className="acceptance-photos">{realPhotos.map(photo => <div className="production-photo" key={photo.id}><button type="button" onClick={() => onExpandImage({ src: "/api/attachments/" + photo.id, name: item.product_name })} aria-label={"放大实拍 " + item.product_name}><img src={"/api/attachments/" + photo.id} alt={item.product_name + " 实拍"} /></button>{(user.role === "admin" || (canPurchase(user.role) && user.supplier_operations === 1)) && canUpload && <button type="button" className="photo-delete" aria-label={"删除实拍 " + photo.file_name} disabled={busy} onClick={() => setDeletingPhoto(photo.id)}>删除</button>}{deletingPhoto === photo.id && <div className="photo-delete-confirm"><p>删除这张实拍？历史保留，需重新验收。</p><button type="button" className="photo-delete" disabled={busy} onClick={() => void removePhoto()}>确认删除</button><button type="button" className="photo-delete" disabled={busy} onClick={() => setDeletingPhoto(null)}>取消</button></div>}</div>)}</div></div>
-    <div role="cell">{canPurchase(user.role) && !order.archived_at ? <ProductAcceptanceCard order={order} item={item} user={user} onChanged={onChanged} /> : <><strong>采购验收</strong><p>{item.acceptance_status === "approved" ? "已验收" : item.acceptance_status === "rejected" ? "退回整改" : "待验收"}</p></>}</div>
+    {!onlinePurchase && <div role="cell"><strong>产品实物图</strong>{canUpload ? <button className="secondary" type="button" onClick={() => setPhotoStage("photos")}>上传实拍照片</button> : <small>{realPhotos.length ? realPhotos.length + " 张实拍" : item.production_photo_waived === 1 ? "未提供实物图" : "暂无实拍照片"}</small>}{item.production_photo_waived === 1 && <small className="photo-waived-status">已记录：未提供实物图</small>}<div className="acceptance-photos">{realPhotos.map(photo => <div className="production-photo" key={photo.id}><button type="button" onClick={() => onExpandImage({ src: "/api/attachments/" + photo.id, name: item.product_name })} aria-label={"放大实拍 " + item.product_name}><img src={"/api/attachments/" + photo.id} alt={item.product_name + " 实拍"} /></button>{(user.role === "admin" || (canPurchase(user.role) && user.supplier_operations === 1)) && canUpload && <button type="button" className="photo-delete" aria-label={"删除实拍 " + photo.file_name} disabled={busy} onClick={() => setDeletingPhoto(photo.id)}>删除</button>}{deletingPhoto === photo.id && <div className="photo-delete-confirm"><p>删除这张实拍？历史保留，需重新验收。</p><button type="button" className="photo-delete" disabled={busy} onClick={() => void removePhoto()}>确认删除</button><button type="button" className="photo-delete" disabled={busy} onClick={() => setDeletingPhoto(null)}>取消</button></div>}</div>)}</div></div>}
+    {!onlinePurchase && <div role="cell">{canPurchase(user.role) && !order.archived_at ? <ProductAcceptanceCard order={order} item={item} user={user} onChanged={onChanged} /> : <><strong>采购验收</strong><p>{item.acceptance_status === "approved" ? "已验收" : item.acceptance_status === "rejected" ? "退回整改" : "待验收"}</p></>}</div>}
     <WarehouseFields order={order} item={item} user={user} onChanged={onChanged} />
     <FreightPayment order={order} item={item} user={user} onChanged={onChanged} />
     <PackagingVolume order={order} item={item} user={user} onChanged={onChanged} />
-  </div>{photoStage && <ProductionPhotoDialog order={order} item={item} stage={photoStage} existing={realPhotos.length} onClose={() => setPhotoStage(null)} onChanged={onChanged} />}{shipmentOpen && <ProductShipmentDialog order={order} item={item} onClose={() => setShipmentOpen(false)} onChanged={onChanged} />}{detailOpen && <ProductDetailDialog order={order} item={item} images={images} user={user} onClose={() => setDetailOpen(false)} onExpandImage={onExpandImage} onChanged={onChanged} />}</div>;
+  </div>{photoStage && <ProductionPhotoDialog order={order} item={item} stage={photoStage} existing={realPhotos.length} onClose={() => setPhotoStage(null)} onChanged={onChanged} />}{shipmentOpen && <ProductShipmentDialog order={order} item={item} onlinePurchase={onlinePurchase} onClose={() => setShipmentOpen(false)} onChanged={onChanged} />}{detailOpen && <ProductDetailDialog order={order} item={item} images={images} user={user} onClose={() => setDetailOpen(false)} onExpandImage={onExpandImage} onChanged={onChanged} />}</div>;
 }
 
-function ProductShipmentDialog({ order, item, onClose, onChanged }: { order: PurchaseOrder; item: PurchaseOrder["items"][number]; onClose: () => void; onChanged: (message: string) => void | Promise<void> }) {
+function ProductShipmentDialog({ order, item, onlinePurchase = false, onClose, onChanged }: { order: PurchaseOrder; item: PurchaseOrder["items"][number]; onlinePurchase?: boolean; onClose: () => void; onChanged: (message: string) => void | Promise<void> }) {
   const ref = useRef<HTMLDialogElement>(null);
   const remaining = item.quantity - item.shipped_quantity;
   const orderRemaining = shippingTotals(order).remaining;
@@ -1109,10 +1128,10 @@ function ProductShipmentDialog({ order, item, onClose, onChanged }: { order: Pur
     finally { setBusy(false); }
   }
   return <dialog ref={ref} className="product-shipment-dialog" aria-labelledby={`shipment-title-${item.id}`} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }} onClick={event => { if (event.target === event.currentTarget && !busy) onClose(); }}><form onSubmit={submit}>
-    <header><div><small>{order.po_number}</small><h3 id={`shipment-title-${item.id}`}>登记发货 · {item.product_name}</h3><p>提交成功后，“发货完成”节点会自动勾选。</p></div><button type="button" aria-label="关闭发货登记" disabled={busy} onClick={onClose}><X size={20} /></button></header>
+    <header><div><small>{order.po_number}</small><h3 id={`shipment-title-${item.id}`}>登记发货 · {item.product_name}</h3><p>{onlinePurchase ? "网上采购由采购直接登记发货；送货单可选。" : "提交成功后，“发货完成”节点会自动勾选。"}</p></div><button type="button" aria-label="关闭发货登记" disabled={busy} onClick={onClose}><X size={20} /></button></header>
     <div className="product-shipment-grid"><label>实际发货日期<input required type="date" min={order.order_date} value={shippedAt} onChange={e => setShippedAt(e.target.value)} /></label><label>本次发货数量<input required type="number" min="1" max={remaining} step="1" value={quantity} onChange={e => setQuantity(Number(e.target.value))} /></label><label>物流公司<input required value={carrier} onChange={e => setCarrier(e.target.value)} placeholder="如：顺丰速运" /></label><label>快递 / 物流单号<input required autoFocus value={tracking} onChange={e => setTracking(e.target.value)} placeholder="请输入单号" /></label><label>箱数<input required type="number" min="1" step="1" value={boxCount} onChange={e => setBoxCount(e.target.value)} /></label></div>
-    <FilePicker label="上传送货单（必填）" files={deliveryNote} onFiles={setDeliveryNote} disabled={busy} accept=".pdf,.doc,.docx,.xls,.xlsx,image/jpeg,image/png,image/webp" />
-    {error && <p className="form-error" role="alert">{error}</p>}<div className="action-buttons"><button type="button" className="secondary" disabled={busy} onClick={onClose}>取消</button><button className="primary" disabled={busy || !tracking.trim() || !carrier.trim() || !deliveryNote.length}>{busy ? "正在提交" : "确认发货"}</button></div>
+    <FilePicker label={onlinePurchase ? "上传送货单（可选）" : "上传送货单（必填）"} files={deliveryNote} onFiles={setDeliveryNote} disabled={busy} accept=".pdf,.doc,.docx,.xls,.xlsx,image/jpeg,image/png,image/webp" />
+    {error && <p className="form-error" role="alert">{error}</p>}<div className="action-buttons"><button type="button" className="secondary" disabled={busy} onClick={onClose}>取消</button><button className="primary" disabled={busy || !tracking.trim() || !carrier.trim() || (!onlinePurchase && !deliveryNote.length)}>{busy ? "正在提交" : "确认发货"}</button></div>
   </form></dialog>;
 }
 
@@ -1248,12 +1267,13 @@ function SupplierDirectory({ suppliers, query, onQuery, onOpen }: { suppliers: S
   const [search, setSearch] = useState(query);
   const [sort, setSort] = useState<"newest" | "oldest">("newest");
   const needle = search.toLowerCase().trim();
-  const list = suppliers.filter((supplier) => `${supplier.code} ${supplier.name} ${supplier.region} ${supplier.contact_name} ${supplier.contact_info} ${supplier.products.map(product => `${product.product_type} ${product.product_name}`).join(" ")} ${supplier.login_email || ""} ${supplier.purchaser_name}`.toLowerCase().includes(needle)).sort((left, right) => sort === "newest" ? right.created_at.localeCompare(left.created_at) : left.created_at.localeCompare(right.created_at));
-  return <div className="directory"><div className="directory-intro"><div><h2>供应商总表</h2><p>共 {suppliers.length} 家供应商。输入关键词筛选，点击供应商进入详情页。</p></div></div>
+  const standardSuppliers = suppliers.filter((supplier) => supplier.is_online_purchase !== 1);
+  const list = standardSuppliers.filter((supplier) => `${supplier.code} ${supplier.name} ${supplier.region} ${supplier.contact_name} ${supplier.contact_info} ${supplier.products.map(product => `${product.product_type} ${product.product_name}`).join(" ")} ${supplier.login_email || ""} ${supplier.purchaser_name}`.toLowerCase().includes(needle)).sort((left, right) => sort === "newest" ? right.created_at.localeCompare(left.created_at) : left.created_at.localeCompare(right.created_at));
+  return <div className="directory"><div className="directory-intro"><div><h2>供应商总表</h2><p>共 {standardSuppliers.length} 家供应商。输入关键词筛选，点击供应商进入详情页。</p></div></div>
     <div className="supplier-filter-bar"><label className="supplier-search"><span>筛选</span><div><Search size={16} /><input aria-label="筛选供应商" value={search} onChange={event => { setSearch(event.target.value); onQuery(event.target.value); }} placeholder="搜索供应商、联系人、产品或负责人" /></div></label><label><span>排列方式</span><select value={sort} onChange={event => setSort(event.target.value as "newest" | "oldest")}><option value="newest">最新添加</option><option value="oldest">最早添加</option></select></label><small>当前显示 {list.length} 家</small></div>
     <div className="supplier-table" role="region" aria-label="供应商总表"><div className="supplier-head"><span>供应商 / 编号</span><span>联系人 / 联系方式</span><span>供应产品</span><span>登录邮箱 / 采购负责人</span></div>
       {list.map((supplier) => <button type="button" className="supplier-line" key={supplier.id} onClick={() => onOpen(supplier.id)} aria-label={`查看供应商 ${supplier.code}，${supplier.name}`}><span><strong>{supplier.name}</strong><small>{supplier.code}</small></span><span><strong>{supplier.contact_name || "待补充"}</strong><small>{supplier.contact_info || supplier.region || "待补充"}</small></span><span><strong>{supplier.products.length} 项</strong><small>{[...new Set(supplier.products.map((product) => product.product_type))].join("、") || "尚未建立产品目录"}</small></span><span><strong>{supplier.login_email || "未开通"}</strong><small>{supplier.purchaser_name || "待分配"}</small></span><ArrowRight size={17} /></button>)}
-      {!list.length && <div className="table-empty">{suppliers.length ? "没有找到供应商，请调整搜索条件" : "暂无供应商，点击右上方新建供应商"}</div>}
+      {!list.length && <div className="table-empty">{standardSuppliers.length ? "没有找到供应商，请调整搜索条件" : "暂无供应商，点击右上方新建供应商"}</div>}
     </div></div>;
 }
 
@@ -1323,13 +1343,14 @@ function NewOrder({ suppliers, user, onCancel, onDone }: { suppliers: Supplier[]
   const change = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
   const updateItem = (index: number, patch: Partial<DraftItem>) => setItems((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
   const selectedSupplier = suppliers.find((supplier) => supplier.id === form.supplierId);
+  const onlinePurchase = selectedSupplier?.is_online_purchase === 1;
   const [commercialTerms, setCommercialTerms] = useState(emptyTerms);
   const [commercialConfirmed, setCommercialConfirmed] = useState(false);
   const initialDraft = useRef(JSON.stringify({ form, items, attachment: [], commercialTerms, commercialConfirmed }));
   useUnsavedChanges(!busy && JSON.stringify({ form, items, attachment: attachment.map(file => file.name), commercialTerms, commercialConfirmed }) !== initialDraft.current);
   useEffect(() => { setCommercialTerms(selectedSupplier?.commercial_terms ? { ...selectedSupplier.commercial_terms } : emptyTerms()); setCommercialConfirmed(false); }, [selectedSupplier?.id, selectedSupplier?.commercial_revision]);
   const supplierCatalog = selectedSupplier?.products || [];
-  const availableTypes = supplierCatalog.length ? PRODUCT_TYPES.filter((type) => supplierCatalog.some((product) => product.product_type === type)) : PRODUCT_TYPES;
+  const availableTypes = PRODUCT_TYPES;
   const productsForType = (type: ProductType | "") => {
     if (!type) return [];
     return supplierCatalog.length ? supplierCatalog.filter((product) => product.product_type === type) : PRODUCT_OPTIONS[type].map((productName) => ({ id: productName, product_name: productName } as SupplierProduct));
@@ -1345,7 +1366,7 @@ function NewOrder({ suppliers, user, onCancel, onDone }: { suppliers: Supplier[]
       const { importPurchaseOrder } = await import("./purchaseOrderImport");
       const imported = await importPurchaseOrder(file, suppliers);
       setForm((current) => ({ ...current, supplierId: imported.supplierId, projectName: imported.projectName, orderDate: imported.orderDate || today, requiredShipDate: imported.requiredShipDate }));
-      setItems(imported.items);
+      setItems(imported.items.length ? imported.items : [emptyItem()]);
       setImportSummary({ supplierName: imported.supplierName, itemCount: imported.items.length, imageCount: imported.imageCount, warnings: imported.warnings });
     } catch (caught) {
       setAttachment([]);
@@ -1371,12 +1392,13 @@ function NewOrder({ suppliers, user, onCancel, onDone }: { suppliers: Supplier[]
     finally { setBusy(false); }
   }
   if (!suppliers.length) return <FormPage title="新建采购单" description="请先建立供应商资料。" onCancel={onCancel}><div className="needs-supplier"><Building2 size={28} /><h3>还没有供应商</h3><p>返回供应商资料，先创建供应商及其登录账号。</p></div></FormPage>;
-  return <FormPage title="新建采购单" description="订单创建后状态为“待供应商确认”。" onCancel={onCancel}>
+  return <FormPage title="新建采购单" description={onlinePurchase ? "网上采购由采购直接登记发货，之后由采购或仓库收货、入库。" : "订单创建后状态为“待供应商确认”。"} onCancel={onCancel}>
     <form className="entity-form order-form" onSubmit={submit}>
       <section className="order-importer" aria-busy={importBusy}><div className="importer-copy"><FileText size={21} /><div><h3>从 Excel 采购单自动填写</h3><p>识别供应商、项目、日期、产品、数量、单价、规格和表内产品图片；识别后请核对再创建。</p></div></div><FilePicker label={importBusy ? "正在识别采购单" : "选择 Excel 采购单"} file={importSummary ? attachment[0] || null : null} onFile={(file) => void handlePurchaseOrderFile(file)} accept=".xlsx,.xls" disabled={importBusy} />{importSummary && <div className="import-summary" role="status"><p><Check size={16} /><span><strong>已识别 {importSummary.itemCount} 项产品</strong><small>{importSummary.supplierName ? `已匹配供应商：${importSummary.supplierName}` : "供应商需要手动确认"} · 产品图片 {importSummary.imageCount} 张</small></span></p>{importSummary.warnings.length > 0 && <ul>{importSummary.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}</div>}</section>
+      {importSummary?.warnings.includes("采购单中没有识别到有效的产品明细") && <p className="import-unrecognized-warning" role="alert">采购单中没有识别到有效的产品明细</p>}
       <div className="form-grid three">
         <label>PO 编号<input className="identity-readonly" value={form.projectName ? `${form.projectName}-自动顺序号` : "选择项目后自动生成"} readOnly aria-readonly="true" /><small>同一项目按 001、002、003 自动顺延。</small></label>
-        <label>供应商<select value={form.supplierId} onChange={(e) => { change("supplierId", e.target.value); setItems([emptyItem()]); }} required><option value="">请选择供应商</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.code} · {supplier.name}</option>)}</select><small>{supplierCatalog.length ? `已关联 ${supplierCatalog.length} 项供应产品` : form.supplierId ? "尚无专属目录，显示通用产品分类" : "导入采购单后可自动匹配"}</small></label>
+        <label>采购来源<select value={form.supplierId} onChange={(e) => change("supplierId", e.target.value)} required><option value="">请选择采购来源</option>{suppliers.filter((supplier) => supplier.is_online_purchase === 1).map((supplier) => <option key={supplier.id} value={supplier.id}>网上采购（淘宝、京东及其他网商）</option>)}{suppliers.filter((supplier) => supplier.is_online_purchase !== 1).map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.code} · {supplier.name}</option>)}</select><small>{onlinePurchase ? "不关联供应商账号或生产流程，由采购直接登记发货。" : supplierCatalog.length ? `已关联 ${supplierCatalog.length} 项供应产品；产品类型仍可自由修改。` : form.supplierId ? "尚无专属目录，显示通用产品分类" : "导入采购单后可自动匹配"}</small></label>
         <label>项目名称<input value={form.projectName} onChange={(e) => change("projectName", e.target.value)} placeholder="项目或客户名称" required /></label>
         <label>下单日期<input type="date" value={form.orderDate} onInput={(e) => change("orderDate", e.currentTarget.value)} required /></label>
         <label>要求发货日期<input type="date" min={form.orderDate} value={form.requiredShipDate} onInput={(e) => change("requiredShipDate", e.currentTarget.value)} required /></label>
@@ -1391,7 +1413,7 @@ function NewOrder({ suppliers, user, onCancel, onDone }: { suppliers: Supplier[]
           <div className="draft-item-number">{String(index + 1).padStart(2, "0")}</div>
           <div className="draft-item-grid">
             <label>型号<input value={item.model} onChange={(e) => updateItem(index, { model: e.target.value })} placeholder="规格型号 / SKU" /></label>
-            <label>产品类型<select value={item.productType} onChange={(e) => updateItem(index, { productType: e.target.value as ProductType, productName: "", specification: "", unit: "", unitPrice: 0 })} required><option value="">请选择产品类型</option>{availableTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
+            <label>产品类型<select value={item.productType} onChange={(e) => updateItem(index, { productType: e.target.value as ProductType })} required><option value="">请选择产品类型</option>{availableTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select><small>修改类型不会清空已导入信息。</small></label>
             <label>产品名称<select value={item.productName} onChange={(e) => selectProduct(index, e.target.value)} disabled={!item.productType} required><option value="">{item.productType ? "请选择产品" : "请先选择产品类型"}</option>{item.productName && !productsForType(item.productType).some((product) => product.product_name === item.productName) && <option value={item.productName}>{item.productName}（采购单识别）</option>}{productsForType(item.productType).map((product) => <option key={product.id} value={product.product_name}>{product.product_name}</option>)}</select></label>
             <label>颜色<input value={item.color} onChange={(e) => updateItem(index, { color: e.target.value })} placeholder="颜色 / 色号" /></label>
             <label>数量<input type="number" min="1" step="1" inputMode="numeric" value={item.quantity} onChange={(e) => updateItem(index, { quantity: Number(e.target.value) })} required /></label>

@@ -12,6 +12,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, headers, credentials: "same-origin" });
   const payload = await response.json().catch(() => ({})) as { error?: string };
   if (!response.ok) throw new ApiError(payload.error || "操作失败，请稍后重试", response.status);
+  if (init?.method && !["GET", "HEAD"].includes(init.method.toUpperCase()) && typeof window !== "undefined") window.dispatchEvent(new Event("procurement:data-changed"));
   return payload as T;
 }
 
