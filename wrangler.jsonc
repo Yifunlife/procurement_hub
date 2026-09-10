@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "yifun-procurement-hub",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-05-15",
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "yifun-procurement-db",
+      "database_id": "8f1093c6-6097-4a8c-83f8-67744eda5f58",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "yifun-procurement-files"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": ["0 1 * * *"]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "yifun-procurement-hub",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
+    "build": "tsc -b && WRANGLER_LOG_PATH=.wrangler/wrangler.log vite build",
+    "preview": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite preview",
+    "check": "tsc -b",
+    "test": "node --test tests/*.test.mjs",
+    "types": "wrangler types",
+    "db:local": "wrangler d1 migrations apply yifun-procurement-db --local"
+  },
+  "dependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@vitejs/plugin-react": "6.0.2",
+    "fflate": "0.8.2",
+    "lucide-react": "0.544.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "vite": "8.0.13",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260901.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3",
+    "wrangler": "4.92.0"
+  },
+  "packageManager": "pnpm@11.19.0"
+}

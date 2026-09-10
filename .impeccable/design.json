@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-03T00:33:18Z",
+  "title": "Design System: 亦玩采购管理中心",
+  "extensions": {
+    "shadows": [
+      { "name": "surface", "value": "0 14px 36px rgba(28, 57, 99, 0.10)", "purpose": "采购详情及表单容器；财务主体不使用。" },
+      { "name": "primary-button", "value": "0 7px 15px rgba(38, 75, 130, .18)", "purpose": "主操作按钮。" },
+      { "name": "input-focus", "value": "0 0 0 3px rgba(38, 75, 130, .11)", "purpose": "输入控件焦点。" }
+    ],
+    "motion": [
+      { "name": "button-state", "value": "transform .16s, background .16s, color .16s", "purpose": "按钮状态；主按钮悬停上移 1px。" },
+      { "name": "drawer", "value": "transform .25s cubic-bezier(.2,.8,.2,1)", "purpose": "移动导航抽屉。" },
+      { "name": "reduced-motion", "value": ".01ms", "purpose": "prefers-reduced-motion 下动画与过渡时长；动画仅一次。" }
+    ],
+    "breakpoints": [
+      { "name": "compact-desktop", "value": "1180px" },
+      { "name": "drawer-navigation", "value": "900px" },
+      { "name": "single-column-forms", "value": "640px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "主按钮", "kind": "button", "refersTo": "button-primary", "description": "主要保存或创建操作。",
+      "html": "<button class=\"ds-primary\">保存修改</button>",
+      "css": ".ds-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:10px 17px;border:0;border-radius:9px;background:var(--green,#264b82);color:white;font-family:inherit;font-weight:700;cursor:pointer;box-shadow:0 7px 15px rgba(38,75,130,.18);transition:transform .16s,background .16s,color .16s}.ds-primary:hover:not(:disabled){background:var(--green-dark,#183765);transform:translateY(-1px)}.ds-primary:focus-visible{outline:3px solid rgba(237,189,11,.55);outline-offset:2px}.ds-primary:disabled{cursor:not-allowed;opacity:.55}"
+    },
+    {
+      "name": "次按钮", "kind": "button", "refersTo": "button-secondary", "description": "刷新等次级操作。",
+      "html": "<button class=\"ds-secondary\">刷新数据</button>",
+      "css": ".ds-secondary{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:9px 15px;border:1px solid #bdc9da;border-radius:9px;background:#fff;color:var(--ink,#12233f);font-family:inherit;font-weight:700;cursor:pointer;transition:transform .16s,background .16s,color .16s}.ds-secondary:hover:not(:disabled){border-color:var(--green,#264b82);color:var(--green,#264b82)}.ds-secondary:focus-visible{outline:3px solid rgba(237,189,11,.55);outline-offset:2px}.ds-secondary:disabled{cursor:not-allowed;opacity:.55}"
+    },
+    {
+      "name": "字段", "kind": "input", "refersTo": "input", "description": "可见标签配合输入与明确占位说明。",
+      "html": "<label class=\"ds-label\">搜索订单<input class=\"ds-input\" placeholder=\"PO、项目或供应商\"></label>",
+      "css": ".ds-label{display:grid;gap:7px;font-size:13px;font-weight:650;color:#3b4742}.ds-input{width:100%;border:1px solid #cbd6e5;background:#fff;border-radius:9px;padding:11px 12px;font:inherit;color:var(--ink,#12233f);caret-color:var(--green,#264b82);transition:border-color .16s,box-shadow .16s}.ds-input:hover{border-color:#91a4c0}.ds-input:focus{outline:none;border-color:var(--green,#264b82);box-shadow:0 0 0 3px rgba(38,75,130,.11)}"
+    },
+    {
+      "name": "主导航", "kind": "nav", "description": "保留蓝底侧栏与黄色选中态。",
+      "html": "<nav class=\"ds-nav\"><button>采购订单</button><button class=\"ds-active\" aria-current=\"page\">财务结算</button></nav>",
+      "css": ".ds-nav{display:grid;gap:5px;padding:17px 13px;background:var(--green,#264b82)}.ds-nav button{width:100%;display:flex;align-items:center;gap:12px;border:0;border-radius:9px;padding:11px 12px;background:transparent;color:#cbd8ea;text-align:left;font-family:inherit;font-size:14px;font-weight:650;cursor:pointer}.ds-nav button:hover{background:rgba(255,255,255,.07);color:white}.ds-nav button.ds-active{background:var(--yellow,#edbd0b);color:#16335e}.ds-nav button:focus-visible{outline:3px solid rgba(237,189,11,.55);outline-offset:2px}"
+    },
+    {
+      "name": "状态标签", "kind": "chip", "description": "只读状态文字，示例为待供应商确认。",
+      "html": "<span class=\"ds-status\">待供应商确认</span>",
+      "css": ".ds-status{display:inline-flex;align-items:center;gap:4px;width:fit-content;border-radius:6px;padding:4px 7px;background:#efe6ca;color:#745a15;font-size:10px;font-weight:700;white-space:nowrap}"
+    },
+    {
+      "name": "表单容器", "kind": "card", "refersTo": "form-card", "description": "采购表单沿用白底圆角；不代表财务主体样式。",
+      "html": "<section class=\"ds-card\">供应商资料</section>",
+      "css": ".ds-card{padding:24px;border-radius:14px;background:var(--paper,#fff);color:var(--ink,#12233f);box-shadow:var(--shadow,0 14px 36px rgba(28,57,99,.10))}@media(max-width:640px){.ds-card{padding:18px 15px}}"
+    },
+    {
+      "name": "待核实提示", "kind": "custom", "refersTo": "verification-note", "description": "明确未核实条件及金额，不冒充零值。",
+      "html": "<p class=\"ds-verification\">本单执行条件待核实。</p>",
+      "css": ".ds-verification{background:var(--signal-soft,#fff3bf);color:var(--ink,#12233f);padding:14px 16px;margin:16px 0;line-height:1.65;font-size:14px}"
+    }
+  ],
+  "narrative": {
+    "overview": "沿用既有蓝色导航、黄色选中态和白色业务内容区。界面以中文业务信息的清晰阅读、表单录入和记录追溯为主；商务条件与财务结算属于既有系统的延伸，不另设视觉品牌。",
+    "dos": [
+      "Do 保留既有蓝黄导航、中文标题层级与系统字体。",
+      "Do 显示明确的“待核实”、历史版本与变更依据。",
+      "Do 将财务宽表的水平滚动限制在表格容器内。"
+    ],
+    "donts": [
+      "Don't 把未知金额显示为零，或用装饰性状态替代业务文字。",
+      "Don't 将商务与财务扩展改造成新的品牌或营销式页面。",
+      "Don't 将采购卡片的移动端折叠模式强加给财务明细表。"
+    ]
+  }
+}
