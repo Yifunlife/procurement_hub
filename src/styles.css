@@ -147,6 +147,56 @@ label small { font-size: 12px; line-height: 1.5; color: var(--muted); font-weigh
 @keyframes toast-in { from { transform: translateY(12px); opacity: 0; } }
 
 .orders-surface { min-height: 0; flex: 1; display: flex; flex-direction: column; padding: 16px 20px 20px; }
+.warehouse-workbench { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 14px; padding: 18px 20px 20px; overflow: hidden; }
+.warehouse-intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; padding: 3px 2px; }
+.warehouse-intro h2 { font-size: 22px; }
+.warehouse-intro p { margin-top: 5px; color: var(--muted); font-size: 12px; }
+.warehouse-tabs { display: flex; flex: 0 0 auto; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+.warehouse-tabs button { display: inline-flex; align-items: center; gap: 7px; min-height: 42px; border: 0; border-bottom: 2px solid transparent; padding: 9px 13px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 700; white-space: nowrap; }
+.warehouse-tabs button:hover { color: var(--green); }
+.warehouse-tabs button.active { border-bottom-color: var(--yellow); color: var(--ink); }
+.warehouse-tabs span { min-width: 19px; padding: 2px 6px; border-radius: 10px; background: #e4eaf2; color: #52657f; font-size: 10px; text-align: center; font-variant-numeric: tabular-nums; }
+.warehouse-tabs button.active span { background: var(--green); color: white; }
+.warehouse-list { min-height: 0; display: flex; flex: 1; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); box-shadow: var(--shadow); }
+.warehouse-list > header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 18px; border-bottom: 1px solid var(--line); background: #edf2f8; }
+.warehouse-list h3 { font-size: 17px; }
+.warehouse-list header p { margin-top: 3px; color: var(--muted); font-size: 11px; }
+.warehouse-list > header > strong { color: var(--signal); font-size: 13px; font-variant-numeric: tabular-nums; }
+.warehouse-rows { min-height: 0; overflow: auto; }
+.warehouse-row { border-bottom: 1px solid var(--line); background: white; }
+.warehouse-row:last-child { border-bottom: 0; }
+.warehouse-row-main { display: grid; grid-template-columns: minmax(200px,1.7fr) repeat(4,minmax(100px,.8fr)); align-items: start; gap: 14px; padding: 16px 18px; }
+.warehouse-row-main > div:not(.warehouse-identity) { display: grid; min-width: 0; gap: 3px; }
+.warehouse-row-main span { color: var(--muted); font-size: 10px; font-weight: 700; }
+.warehouse-row-main strong { overflow-wrap: anywhere; color: var(--ink); font-size: 12px; line-height: 1.45; }
+.warehouse-row-main small { overflow-wrap: anywhere; color: #617089; font-size: 10px; line-height: 1.4; }
+.warehouse-identity { display: grid; grid-template-columns: 42px minmax(0,1fr); align-items: center; min-width: 0; gap: 8px; }
+.warehouse-identity > div { display: grid; min-width: 0; gap: 3px; }
+.warehouse-identity > div > strong { color: var(--signal); font-size: 12px; font-variant-numeric: tabular-nums; }
+.warehouse-identity > div > span { overflow-wrap: anywhere; color: var(--ink); font-size: 14px; font-weight: 800; }
+.warehouse-identity > div > small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.warehouse-product-image { width: 42px; height: 42px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--paper-deep); color: var(--muted); font-size: 10px; }
+.warehouse-product-image img { width: 100%; height: 100%; object-fit: cover; }
+.warehouse-action { margin: 0 18px 16px; border: 1px solid #d7e0ec; border-radius: 10px; background: #f8fafd; }
+.warehouse-action > summary { display: flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 12px; color: var(--green); font-size: 12px; font-weight: 800; cursor: pointer; list-style: none; }
+.warehouse-action > summary::-webkit-details-marker { display: none; }
+.warehouse-action form { display: grid; gap: 12px; padding: 0 12px 13px; }
+.warehouse-action label { display: grid; gap: 5px; color: #53647c; font-size: 11px; font-weight: 700; }
+.warehouse-action textarea { min-height: 72px; }
+.warehouse-form-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+.warehouse-decision { display: flex; gap: 20px; border: 0; padding: 0; }
+.warehouse-decision label { display: inline-flex; align-items: center; gap: 7px; color: var(--ink); }
+.warehouse-decision input { width: 16px; height: 16px; margin: 0; accent-color: var(--green); }
+.warehouse-action .file-picker { margin: 0; }
+.warehouse-action .file-picker label { min-height: auto; }
+.warehouse-files { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 0 18px 16px; color: var(--muted); font-size: 11px; }
+.warehouse-files a { color: var(--green); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.warehouse-empty, .warehouse-loading { display: grid; place-items: center; align-content: center; gap: 7px; min-height: 220px; padding: 30px; color: var(--muted); text-align: center; }
+.warehouse-empty svg { color: var(--green); }
+.warehouse-empty strong { color: var(--ink); font-size: 14px; }
+.warehouse-empty p { font-size: 12px; }
+@media (max-width: 900px) { .warehouse-row-main { grid-template-columns: repeat(2,minmax(0,1fr)); } .warehouse-identity { grid-column: 1 / -1; } }
+@media (max-width: 640px) { .warehouse-workbench { padding: 12px 10px; } .warehouse-intro { align-items: flex-start; flex-direction: column; } .warehouse-intro .secondary { width: 100%; } .warehouse-list > header { padding: 14px; } .warehouse-row-main { grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px; } .warehouse-form-grid { grid-template-columns: 1fr; } .warehouse-action { margin: 0 14px 14px; } }
 .delivery-risk-board { flex: 0 0 auto; margin-bottom: 12px; overflow: hidden; border: 1px solid #d6dfeb; border-radius: 12px; background: var(--paper); }
 .delivery-risk-summary { display: grid; grid-template-columns: minmax(150px,.7fr) auto auto minmax(230px,1fr); align-items: center; gap: 8px 18px; min-height: 68px; padding: 10px 16px; }
 .delivery-risk-summary > div { display: flex; align-items: baseline; gap: 10px; }

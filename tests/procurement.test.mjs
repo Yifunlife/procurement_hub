@@ -646,6 +646,36 @@ test('warehouse supports partial receipt, supplementary registration, idempotenc
   assert.throws(()=>db.exec("UPDATE warehouse_records SET quantity=1"));
 });
 
+test('warehouse queue keeps receipt, inspection exception and stock-in as separate PO-linked records', async () => {
+  const { db, request } = fixture();
+  db.exec("INSERT INTO staff_roles VALUES ('buyer','warehouse'); UPDATE purchase_orders SET status='shipped'; UPDATE order_items SET shipped_quantity=quantity");
+  assert.equal((await request('vendor', '/warehouse/queue', undefined, 'GET')).status, 403);
+  const initial = await (await request('buyer', '/warehouse/queue', undefined, 'GET')).json();
+  assert.equal(initial.arrivals.length, 20);
+  const receipt = new FormData();
+  for (const [key, value] of Object.entries({ orderId: 'order', itemId: 'item-0', requestId: crypto.randomUUID(), quantity: '2', receivedDate: '2026-09-03' })) receipt.set(key, value);
+  assert.equal((await request('buyer', '/warehouse/receipts', receipt, 'POST')).status, 201);
+  let queue = await (await request('buyer', '/warehouse/queue', undefined, 'GET')).json();
+  const first = queue.receipts.find(row => row.item_id === 'item-0');
+  assert.equal(first.status, 'pending_inspection');
+  const passed = new FormData(); passed.set('decision', 'passed');
+  assert.equal((await request('buyer', `/warehouse/receipts/${first.id}/inspection`, passed, 'POST')).status, 200);
+  assert.equal((await request('buyer', `/warehouse/receipts/${first.id}/stock`, { quantity: 2, warehouseName: '配件仓', storageLocation: 'A-01-03', requestId: crypto.randomUUID() }, 'POST')).status, 200);
+  queue = await (await request('buyer', '/warehouse/queue', undefined, 'GET')).json();
+  assert.equal(queue.receipts.find(row => row.id === first.id).status, 'stocked');
+  const exceptionReceipt = new FormData();
+  for (const [key, value] of Object.entries({ orderId: 'order', itemId: 'item-1', requestId: crypto.randomUUID(), quantity: '1', receivedDate: '2026-09-03' })) exceptionReceipt.set(key, value);
+  assert.equal((await request('buyer', '/warehouse/receipts', exceptionReceipt, 'POST')).status, 201);
+  queue = await (await request('buyer', '/warehouse/queue', undefined, 'GET')).json();
+  const second = queue.receipts.find(row => row.item_id === 'item-1');
+  const exception = new FormData();
+  for (const [key, value] of Object.entries({ decision: 'exception', exceptionType: 'damaged', exceptionQuantity: '1', exceptionNotes: '外包装破损' })) exception.set(key, value);
+  assert.equal((await request('buyer', `/warehouse/receipts/${second.id}/inspection`, exception, 'POST')).status, 200);
+  queue = await (await request('buyer', '/warehouse/queue', undefined, 'GET')).json();
+  assert.equal(queue.receipts.find(row => row.id === second.id).status, 'exception');
+  assert.equal((await request('buyer', `/warehouse/receipts/${second.id}/stock`, { quantity: 1, warehouseName: '配件仓', storageLocation: 'A-01-04', requestId: crypto.randomUUID() }, 'POST')).status, 409);
+});
+
 test('boss can create finance account, session uses effective role, other roles cannot grant access', async () => {
   const { db, request } = fixture();
   const body = { name: '独立测试财务', email: 'accountant@example.test', password: 'Local-test-password', role: 'finance' };

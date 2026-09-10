@@ -936,6 +936,7 @@ async function warehouseAction(request: Request, env: Env, orderId: string, item
   try {
     await env.DB.batch([
       env.DB.prepare("INSERT INTO warehouse_records(id,order_id,item_id,action,quantity,actor_id,actor_name,record_date,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)").bind(body.requestId,orderId,itemId,body.action,body.quantity,actor.id,actor.name,businessDate,timestamp),
+      ...(body.action === "received" ? [env.DB.prepare("INSERT INTO warehouse_receipts(id,order_id,item_id,received_quantity,received_date,received_by,status,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,'pending_inspection',?7,?7)").bind(body.requestId,orderId,itemId,body.quantity,businessDate,actor.name,timestamp)] : []),
       env.DB.prepare("INSERT INTO order_events(id,order_id,event_type,detail,actor_id,actor_name,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)").bind(id(),orderId,body.action === "received" ? "warehouse_received" : "warehouse_stocked",`${body.action === "received" ? "仓库收货" : "确认入库"} ${body.quantity} 件 · 业务日期 ${businessDate}`,actor.id,actor.name,timestamp),
     ]);
   } catch (caught) {
@@ -943,6 +944,130 @@ async function warehouseAction(request: Request, env: Env, orderId: string, item
     throw caught;
   }
   return json({ ok: true });
+}
+
+const canOperateWarehouse = (actor: SessionUser, onlinePurchase: number) => ["warehouse", "boss", "admin"].includes(actor.role) || (onlinePurchase === 1 && canPurchase(actor.role));
+const canViewWarehouse = (actor: SessionUser) => ["warehouse", "boss", "admin", "purchaser", "management"].includes(actor.role);
+
+async function saveWarehouseReceiptFiles(env: Env, receiptId: string, orderId: string, itemId: string, actor: SessionUser, entries: FormDataEntryValue[], kind: "arrival_photo" | "delivery_note" | "exception_photo") {
+  for (const entry of entries) {
+    if (!(entry instanceof File) || !entry.size || entry.size > 15 * 1024 * 1024) throw new Error("文件不能为空，且单个文件不能超过 15MB");
+    if (BLOCKED_UPLOAD_TYPES.has(entry.type)) throw new Error("不支持 SVG、HTML 或 XML 文件");
+    const buffer = await entry.arrayBuffer();
+    if ((kind !== "delivery_note" || entry.type.startsWith("image/")) && (!RASTER_TYPES.has(entry.type) || sniffRaster(buffer) !== entry.type)) throw new Error("图片只支持经过校验的 JPG、PNG 或 WebP");
+    const attachmentId = id(), key = `${orderId}/warehouse/${receiptId}/${attachmentId}-${safeFileName(entry.name)}`;
+    await env.FILES.put(key, buffer, { httpMetadata: { contentType: entry.type || "application/octet-stream" } });
+    await env.DB.prepare("INSERT INTO warehouse_receipt_attachments(id,receipt_id,order_id,item_id,kind,file_name,content_type,r2_key,uploaded_by,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)")
+      .bind(attachmentId,receiptId,orderId,itemId,kind,entry.name,entry.type || "application/octet-stream",key,actor.id,now()).run();
+  }
+}
+
+async function createWarehouseReceipt(request: Request, env: Env) {
+  const actor = await requireSession(request, env), form = await request.formData();
+  const orderId = String(form.get("orderId") || ""), itemId = String(form.get("itemId") || ""), receiptId = String(form.get("requestId") || "");
+  const quantity = Number(form.get("quantity")), receivedDate = String(form.get("receivedDate") || "");
+  if (!orderId || !itemId || !/^[a-zA-Z0-9-]{16,80}$/.test(receiptId) || !Number.isSafeInteger(quantity) || quantity < 1 || !validDate(receivedDate) || receivedDate > businessToday()) return error("请填写有效的到货日期和整数数量");
+  const item = await env.DB.prepare("SELECT i.id,po.order_date,s.is_online_purchase FROM order_items i JOIN purchase_orders po ON po.id=i.order_id JOIN suppliers s ON s.id=po.supplier_id WHERE i.id=?1 AND i.order_id=?2").bind(itemId,orderId).first<{id:string;order_date:string;is_online_purchase:number}>();
+  if (!item) return error("产品不存在",404);
+  if (!canOperateWarehouse(actor,item.is_online_purchase)) return error("没有权限确认到货",403);
+  if (receivedDate < item.order_date) return error("到货日期不能早于下单日期");
+  if (await env.DB.prepare("SELECT id FROM warehouse_receipts WHERE id=?1").bind(receiptId).first()) return json({ ok: true, receiptId });
+  const timestamp = now();
+  try {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO warehouse_records(id,order_id,item_id,action,quantity,actor_id,actor_name,record_date,created_at) VALUES (?1,?2,?3,'received',?4,?5,?6,?7,?8)").bind(receiptId,orderId,itemId,quantity,actor.id,actor.name,receivedDate,timestamp),
+      env.DB.prepare("INSERT INTO warehouse_receipts(id,order_id,item_id,received_quantity,received_date,received_by,status,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,'pending_inspection',?7,?7)").bind(receiptId,orderId,itemId,quantity,receivedDate,actor.name,timestamp),
+      env.DB.prepare("INSERT INTO order_events(id,order_id,event_type,detail,actor_id,actor_name,created_at) VALUES (?1,?2,'warehouse_received',?3,?4,?5,?6)").bind(id(),orderId,`仓库确认到货 ${quantity} 件 · 业务日期 ${receivedDate}`,actor.id,actor.name,timestamp),
+    ]);
+  } catch (cause) {
+    if (/UNIQUE|仓库数量|CHECK/.test(String(cause))) return error("到货数量超过已发未收数量，请刷新核对",409);
+    throw cause;
+  }
+  try {
+    await saveWarehouseReceiptFiles(env,receiptId,orderId,itemId,actor,form.getAll("arrivalPhoto"),"arrival_photo");
+    const notes = form.getAll("deliveryNote");
+    if (notes.filter(entry => entry instanceof File && !entry.type.startsWith("image/")).length > 1) return error("送货单表单只能上传一份，图片可以多张");
+    await saveWarehouseReceiptFiles(env,receiptId,orderId,itemId,actor,notes,"delivery_note");
+  } catch (cause) { return error(cause instanceof Error ? cause.message : "附件上传失败"); }
+  return json({ ok: true, receiptId },201);
+}
+
+async function inspectWarehouseReceipt(request: Request, env: Env, receiptId: string) {
+  const actor = await requireSession(request, env), form = await request.formData();
+  const decision = String(form.get("decision") || ""), exceptionType = String(form.get("exceptionType") || ""), exceptionNotes = String(form.get("exceptionNotes") || "").trim();
+  const rawQuantity = form.get("exceptionQuantity"), exceptionQuantity = rawQuantity === null || rawQuantity === "" ? null : Number(rawQuantity);
+  const receipt = await env.DB.prepare("SELECT r.*,s.is_online_purchase FROM warehouse_receipts r JOIN purchase_orders po ON po.id=r.order_id JOIN suppliers s ON s.id=po.supplier_id WHERE r.id=?1 AND po.archived_at IS NULL").bind(receiptId).first<{order_id:string;item_id:string;received_quantity:number;status:string;is_online_purchase:number}>();
+  if (!receipt) return error("收货验收记录不存在",404);
+  if (!canOperateWarehouse(actor,receipt.is_online_purchase)) return error("没有权限验收",403);
+  if (receipt.status !== "pending_inspection") return error("该收货记录已验收，请刷新核对",409);
+  if (!["passed","exception"].includes(decision)) return error("请选择验收结果");
+  if (decision === "exception" && (!["shortage","overage","wrong_item","damaged","specification","other"].includes(exceptionType) || !Number.isSafeInteger(exceptionQuantity) || Number(exceptionQuantity) < 1 || Number(exceptionQuantity) > receipt.received_quantity || !exceptionNotes)) return error("请填写异常类型、数量和说明");
+  const timestamp = now();
+  const result = await env.DB.batch([
+    env.DB.prepare("UPDATE warehouse_receipts SET status=?1,exception_type=?2,exception_quantity=?3,exception_notes=?4,inspected_at=?5,inspected_by=?6,updated_at=?5 WHERE id=?7 AND status='pending_inspection'").bind(decision,decision === "exception" ? exceptionType : null,decision === "exception" ? exceptionQuantity : null,decision === "exception" ? exceptionNotes : "",timestamp,actor.name,receiptId),
+    env.DB.prepare("INSERT INTO order_events(id,order_id,event_type,detail,actor_id,actor_name,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)").bind(id(),receipt.order_id,decision === "passed" ? "warehouse_inspection_passed" : "warehouse_exception",decision === "passed" ? "仓库验收通过，等待入库" : `仓库验收异常：${exceptionNotes}`,actor.id,actor.name,timestamp),
+  ]);
+  if (!result[0].meta.changes) return error("该收货记录已验收，请刷新核对",409);
+  try { await saveWarehouseReceiptFiles(env,receiptId,receipt.order_id,receipt.item_id,actor,form.getAll("exceptionPhoto"),"exception_photo"); }
+  catch (cause) { return error(cause instanceof Error ? cause.message : "异常照片上传失败"); }
+  return json({ ok: true });
+}
+
+async function stockWarehouseReceipt(request: Request, env: Env, receiptId: string) {
+  const actor = await requireSession(request, env);
+  const body = await readBody<{quantity?:number;warehouseName?:string;storageLocation?:string;requestId?:string}>(request);
+  const quantity = Number(body.quantity), warehouseName = String(body.warehouseName || "").trim(), storageLocation = String(body.storageLocation || "").trim(), stockId = String(body.requestId || "");
+  if (!Number.isSafeInteger(quantity) || quantity < 1 || !warehouseName || !storageLocation || !/^[a-zA-Z0-9-]{16,80}$/.test(stockId)) return error("请填写入库数量、仓库和库位");
+  const receipt = await env.DB.prepare("SELECT r.*,s.is_online_purchase FROM warehouse_receipts r JOIN purchase_orders po ON po.id=r.order_id JOIN suppliers s ON s.id=po.supplier_id WHERE r.id=?1 AND po.archived_at IS NULL").bind(receiptId).first<{order_id:string;item_id:string;received_quantity:number;stocked_quantity:number;status:string;warehouse_name:string;storage_location:string;is_online_purchase:number}>();
+  if (!receipt) return error("收货验收记录不存在",404);
+  if (!canOperateWarehouse(actor,receipt.is_online_purchase)) return error("没有权限入库",403);
+  if (receipt.status !== "passed" || quantity > receipt.received_quantity-receipt.stocked_quantity) return error("只能入库已验收通过的待入库数量",409);
+  if (receipt.stocked_quantity && (receipt.warehouse_name !== warehouseName || receipt.storage_location !== storageLocation)) return error("同一收货记录请使用同一个仓库和库位",409);
+  if (await env.DB.prepare("SELECT id FROM warehouse_records WHERE id=?1").bind(stockId).first()) return json({ ok: true });
+  const timestamp = now(), finished = receipt.stocked_quantity + quantity === receipt.received_quantity;
+  try {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO warehouse_records(id,order_id,item_id,action,quantity,actor_id,actor_name,record_date,created_at) VALUES (?1,?2,?3,'stocked',?4,?5,?6,?7,?8)").bind(stockId,receipt.order_id,receipt.item_id,quantity,actor.id,actor.name,businessToday(),timestamp),
+      env.DB.prepare("UPDATE warehouse_receipts SET stocked_quantity=stocked_quantity+?1,warehouse_name=?2,storage_location=?3,stocked_at=?4,stocked_by=?5,status=?6,updated_at=?4 WHERE id=?7 AND status='passed'").bind(quantity,warehouseName,storageLocation,timestamp,actor.name,finished ? "stocked" : "passed",receiptId),
+      env.DB.prepare("INSERT INTO order_events(id,order_id,event_type,detail,actor_id,actor_name,created_at) VALUES (?1,?2,'warehouse_stocked',?3,?4,?5,?6)").bind(id(),receipt.order_id,`确认入库 ${quantity} 件 · ${warehouseName} / ${storageLocation}`,actor.id,actor.name,timestamp),
+    ]);
+  } catch (cause) {
+    if (/UNIQUE|仓库数量|CHECK/.test(String(cause))) return error("入库数量超过已收未入库数量，请刷新核对",409);
+    throw cause;
+  }
+  return json({ ok: true });
+}
+
+async function warehouseQueue(request: Request, env: Env) {
+  const actor = await requireSession(request, env);
+  if (!canViewWarehouse(actor)) return error("没有权限查看仓库验收",403);
+  const arrivals = (await env.DB.prepare(`SELECT po.id AS order_id,po.po_number,po.project_name,s.name AS supplier_name,s.is_online_purchase,i.id AS item_id,i.product_name,i.model,i.product_type,i.specification,i.quantity,i.unit,i.shipped_quantity,i.received_quantity,po.carrier,po.tracking_number,po.shipped_at
+    FROM order_items i JOIN purchase_orders po ON po.id=i.order_id JOIN suppliers s ON s.id=po.supplier_id
+    WHERE po.archived_at IS NULL AND i.shipped_quantity>i.received_quantity ORDER BY po.shipped_at DESC,po.updated_at DESC`).all()).results;
+  const receipts = (await env.DB.prepare(`SELECT r.*,po.po_number,po.project_name,s.name AS supplier_name,s.is_online_purchase,i.product_name,i.model,i.product_type,i.specification,i.unit,i.quantity AS ordered_quantity,i.shipped_quantity,i.received_quantity AS item_received_quantity
+    FROM warehouse_receipts r JOIN purchase_orders po ON po.id=r.order_id JOIN suppliers s ON s.id=po.supplier_id JOIN order_items i ON i.id=r.item_id
+    WHERE po.archived_at IS NULL ORDER BY r.updated_at DESC`).all()).results as Array<Record<string, unknown>>;
+  const receiptIds = receipts.map(receipt => String(receipt.id));
+  const attachments = receiptIds.length ? (await env.DB.prepare(`SELECT id,receipt_id,kind,file_name,content_type FROM warehouse_receipt_attachments WHERE receipt_id IN (${receiptIds.map((_,index)=>`?${index+1}`).join(",")}) ORDER BY created_at`).bind(...receiptIds).all()).results : [];
+  for (const receipt of receipts) receipt.attachments = attachments.filter(attachment => attachment.receipt_id === receipt.id);
+  const itemIds = [...new Set([...arrivals, ...receipts].map(row => String(row.item_id)))];
+  const productImages = itemIds.length ? (await env.DB.prepare(`SELECT id,item_id,file_name,kind FROM attachments WHERE deleted_at IS NULL AND item_id IN (${itemIds.map((_,index)=>`?${index+1}`).join(",")}) AND kind IN ('product_image','production_photo') AND content_type LIKE 'image/%' ORDER BY created_at DESC`).bind(...itemIds).all()).results : [];
+  for (const arrival of arrivals) arrival.images = productImages.filter(image => image.item_id === arrival.item_id);
+  for (const receipt of receipts) receipt.images = productImages.filter(image => image.item_id === receipt.item_id);
+  return json({ arrivals, receipts });
+}
+
+async function downloadWarehouseReceiptAttachment(request: Request, env: Env, attachmentId: string) {
+  const actor = await requireSession(request, env);
+  if (!canViewWarehouse(actor)) return error("没有权限查看仓库附件",403);
+  const attachment = await env.DB.prepare("SELECT * FROM warehouse_receipt_attachments WHERE id=?1").bind(attachmentId).first<{r2_key:string;file_name:string;content_type:string}>();
+  if (!attachment) return error("附件不存在",404);
+  const object = await env.FILES.get(attachment.r2_key);
+  if (!object) return error("附件文件不存在",404);
+  const headers = new Headers(); object.writeHttpMetadata(headers);
+  headers.set("Content-Type",attachment.content_type); headers.set("Content-Disposition",`${RASTER_TYPES.has(attachment.content_type) ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(attachment.file_name)}`);
+  headers.set("Cache-Control","private, max-age=300"); headers.set("X-Content-Type-Options","nosniff"); headers.set("Content-Security-Policy","default-src 'none'; sandbox");
+  return new Response(object.body,{headers});
 }
 
 function validDate(value: unknown): value is string {
@@ -1409,6 +1534,14 @@ async function handleApi(request: Request, env: Env) {
     return json({ authenticated: Boolean(user), user });
   }
   if (path === "/api/dashboard" && request.method === "GET") return dashboard(request, env);
+  if (path === "/api/warehouse/queue" && request.method === "GET") return warehouseQueue(request, env);
+  if (path === "/api/warehouse/receipts" && request.method === "POST") return createWarehouseReceipt(request, env);
+  const warehouseReceiptInspectionMatch = path.match(/^\/api\/warehouse\/receipts\/([^/]+)\/inspection$/);
+  if (warehouseReceiptInspectionMatch && request.method === "POST") return inspectWarehouseReceipt(request, env, warehouseReceiptInspectionMatch[1]);
+  const warehouseReceiptStockMatch = path.match(/^\/api\/warehouse\/receipts\/([^/]+)\/stock$/);
+  if (warehouseReceiptStockMatch && request.method === "POST") return stockWarehouseReceipt(request, env, warehouseReceiptStockMatch[1]);
+  const warehouseReceiptAttachmentMatch = path.match(/^\/api\/warehouse\/attachments\/([^/]+)$/);
+  if (warehouseReceiptAttachmentMatch && request.method === "GET") return downloadWarehouseReceiptAttachment(request, env, warehouseReceiptAttachmentMatch[1]);
   if (path === "/api/finance" && request.method === "GET") return financeDashboard(request, env);
   if (path === "/api/staff" && ["GET", "POST"].includes(request.method)) return staffAccounts(request, env);
   const staffMatch = path.match(/^\/api\/staff\/([^/]+)$/);

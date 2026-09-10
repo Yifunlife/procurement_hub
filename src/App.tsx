@@ -34,6 +34,7 @@ import {
 import { api, ApiError, uploadFile } from "./api";
 import { FilePicker } from "./FilePicker";
 import { ExportButton } from "./ExportButton";
+import { WarehouseWorkbench } from "./WarehouseWorkbench";
 import { canPurchase, roleLabel, emptyTerms, TermsFields, SupplierTermsEditor, OrderCommercial, FinancePanel, StaffPanel } from "./Commercial";
 import type { DashboardData, FinanceOrder, ProductType, ProductWorkflowStage, PurchaseOrder, Status, Supplier, SupplierProduct, User } from "./types";
 
@@ -234,7 +235,7 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
   );
 }
 
-type View = "ceo" | "orders" | "suppliers" | "supplier-detail" | "new-order" | "new-supplier" | "edit-supplier" | "finance" | "staff" | "account";
+type View = "ceo" | "orders" | "warehouse" | "suppliers" | "supplier-detail" | "new-order" | "new-supplier" | "edit-supplier" | "finance" | "staff" | "account";
 type Filter = "all" | Status | "delayed" | "archived";
 
 function Workbench({ user, onLogout }: { user: User; onLogout: () => void }) {
@@ -367,6 +368,7 @@ function Workbench({ user, onLogout }: { user: User; onLogout: () => void }) {
         <nav aria-label="主导航">
           {["boss", "admin"].includes(user.role) && <a href="?view=ceo" className={view === "ceo" ? "active" : ""} aria-current={view === "ceo" ? "page" : undefined} onClick={(event) => { event.preventDefault(); setView("ceo"); setMobileNav(false); }}><LayoutDashboard size={19} aria-hidden="true" />CEO 看板</a>}
           {user.role !== "finance" && <a href="?view=orders" className={view === "orders" || view === "new-order" ? "active" : ""} aria-current={view === "orders" ? "page" : undefined} onClick={(event) => { event.preventDefault(); setView("orders"); setFilter("all"); setQuery(""); setCurrentProject("尚未选择项目"); setSelectedId(""); setMobileNav(false); }}><LayoutList size={19} aria-hidden="true" />采购订单</a>}
+          {["warehouse", "boss", "admin", "purchaser", "management"].includes(user.role) && <a href="?view=warehouse" className={view === "warehouse" ? "active" : ""} aria-current={view === "warehouse" ? "page" : undefined} onClick={(event) => { event.preventDefault(); setView("warehouse"); setMobileNav(false); }}><PackageCheck size={19} aria-hidden="true" />仓库验收</a>}
           {hasFinanceAccess && <a href="?view=finance" className={view === "finance" ? "active" : ""} aria-current={view === "finance" ? "page" : undefined} onClick={(event) => { event.preventDefault(); setView("finance"); setMobileNav(false); }}><FileText size={19} aria-hidden="true" />财务结算</a>}
           {["boss", "admin", "office"].includes(user.role) && <a href="?view=staff" className={view === "staff" ? "active" : ""} aria-current={view === "staff" ? "page" : undefined} onClick={(event) => { event.preventDefault(); setView("staff"); setMobileNav(false); }}><ShieldCheck size={19} aria-hidden="true" />内部账号</a>}
           {(canPurchase(user.role) || ["office", "management"].includes(user.role)) && <a href="?view=suppliers" className={["suppliers", "supplier-detail", "new-supplier", "edit-supplier"].includes(view) ? "active" : ""} aria-current={view === "suppliers" ? "page" : undefined} onClick={(event) => { event.preventDefault(); setView("suppliers"); setMobileNav(false); }}><Building2 size={19} aria-hidden="true" />供应商资料</a>}
@@ -381,7 +383,7 @@ function Workbench({ user, onLogout }: { user: User; onLogout: () => void }) {
       <main id="main-content" className="workspace" tabIndex={-1}>
         <header className="topbar">
           <button className="icon-button mobile-only" onClick={() => setMobileNav(true)} aria-label="打开导航"><Menu size={21} /></button>
-          <div><h1>{view === "ceo" ? "CEO 采购看板" : view === "account" ? "个人账号" : view === "finance" ? "财务结算" : view === "staff" ? "内部账号" : view === "suppliers" ? "供应商资料" : view === "supplier-detail" ? "供应商详情" : view === "new-supplier" ? "新建供应商" : view === "edit-supplier" ? "编辑供应商" : view === "new-order" ? "新建采购单" : canPurchase(user.role) ? "采购订单"  : ["engineering", "warehouse", "office", "management"].includes(user.role) ? "全部采购单" : "我的采购单"}</h1><p>{view === "ceo" ? "看金额、付款、发票和成本分布，不展开订单细节。" : user.role === "finance" ? "逐笔记录付款、发票与成本，金额自动汇总。" : user.role === "management" ? "管理采购、供应商与财务结算；不含 CEO 看板和内部账号管理。" : canPurchase(user.role) ? "今天需要推进的采购事项，都在这里。" : user.role === "office" ? "全部资料只读，不可修改、下载表单或导出。" : user.role === "warehouse" ? "核对产品收货与入库，不显示财务金额。" : user.role === "engineering" ? "只读查看全部采购单，不含财务金额；收货与入库由仓库部确认。" : "查看并更新属于贵司的采购订单。"}</p></div>
+          <div><h1>{view === "ceo" ? "CEO 采购看板" : view === "warehouse" ? "仓库验收" : view === "account" ? "个人账号" : view === "finance" ? "财务结算" : view === "staff" ? "内部账号" : view === "suppliers" ? "供应商资料" : view === "supplier-detail" ? "供应商详情" : view === "new-supplier" ? "新建供应商" : view === "edit-supplier" ? "编辑供应商" : view === "new-order" ? "新建采购单" : canPurchase(user.role) ? "采购订单"  : ["engineering", "warehouse", "office", "management"].includes(user.role) ? "全部采购单" : "我的采购单"}</h1><p>{view === "ceo" ? "看金额、付款、发票和成本分布，不展开订单细节。" : view === "warehouse" ? "按到货、验收、异常和入库处理已发货产品；不显示财务金额。" : user.role === "finance" ? "逐笔记录付款、发票与成本，金额自动汇总。" : user.role === "management" ? "管理采购、供应商与财务结算；不含 CEO 看板和内部账号管理。" : canPurchase(user.role) ? "今天需要推进的采购事项，都在这里。" : user.role === "office" ? "全部资料只读，不可修改、下载表单或导出。" : user.role === "warehouse" ? "核对产品收货与入库，不显示财务金额。" : user.role === "engineering" ? "只读查看全部采购单，不含财务金额；收货与入库由仓库部确认。" : "查看并更新属于贵司的采购订单。"}</p></div>
           {canPurchase(user.role) && view === "orders" && <button className="primary" onClick={() => setView("new-order")}><Plus size={18} />新建采购单</button>}
           {canPurchase(user.role) && view === "suppliers" && <button className="primary" onClick={() => setView("new-supplier")}><Plus size={18} />新建供应商</button>}
         </header>
@@ -390,6 +392,7 @@ function Workbench({ user, onLogout }: { user: User; onLogout: () => void }) {
         {view === "finance" && hasFinanceAccess && <FinancePanel key={refreshVersion} readOnly={user.role === "office"} />}
         {view === "staff" && ["boss", "admin", "office"].includes(user.role) && <div className={"staff-scroll" + (user.role === "office" ? " office-readonly" : "")}><StaffPanel onLogout={onLogout} /></div>}
         {view === "account" && <Account user={user} onLogout={onLogout} />}
+        {view === "warehouse" && <WarehouseWorkbench user={user} refreshVersion={refreshVersion} onChanged={async (message) => { setToast(message); await refresh(); }} />}
         {view === "new-order" && <NewOrder suppliers={data.suppliers} user={user} onCancel={() => setView("orders")} onDone={(id, message) => { setSelectedId(id); void done(message || "采购单已创建，等待供应商确认"); }} />}
         {view === "new-supplier" && <NewSupplier user={user} onCancel={() => setView("suppliers")} onDone={async () => { setToast("供应商资料与登录账号已创建"); setView("suppliers"); await refresh(); }} />}
         {view === "edit-supplier" && <NewSupplier user={user} supplier={data.suppliers.find((supplier) => supplier.id === editingSupplierId)} onCancel={() => setView("supplier-detail")} onDone={async () => { setToast("供应商资料与登录账号已更新"); setView("supplier-detail"); await refresh(); }} />}
