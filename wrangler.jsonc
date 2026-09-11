@@ -21,6 +21,20 @@
       "bucket_name": "yifun-procurement-files"
     }
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REALTIME",
+        "class_name": "RealtimeHub"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RealtimeHub"]
+    }
+  ],
   "observability": {
     "enabled": true
   },

@@ -798,8 +798,22 @@ label small { font-size: 12px; line-height: 1.5; color: var(--muted); font-weigh
 .supplier-line > svg { color: var(--muted); transition: transform .18s ease; }
 .supplier-detail-content { padding: 24px; background: var(--paper); }
 .supplier-product-list h3, .supplier-default-terms h3 { font-size: 18px; margin-bottom: 16px; }
-.supplier-product-name { display: flex; align-items: baseline; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
-.supplier-product-name span { flex: 0 0 auto; color: var(--muted); }
+.supplier-product-table { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.supplier-product-head, .supplier-product-row > summary { display: grid; grid-template-columns: .9fr 1.55fr 1.25fr .48fr .72fr; gap: 12px; align-items: center; }
+.supplier-product-head { padding: 10px 12px; background: #e8e4d9; color: var(--muted); font-size: 10px; font-weight: 700; }
+.supplier-product-row { border-top: 1px solid var(--line); }
+.supplier-product-row > summary { min-height: 56px; padding: 10px 12px; list-style: none; cursor: pointer; font-size: 12px; }
+.supplier-product-row > summary::-webkit-details-marker { display: none; }
+.supplier-product-row > summary:hover { background: #faf9f5; }
+.supplier-product-row > summary > span { color: var(--muted); overflow-wrap: anywhere; }
+.supplier-product-row > summary > strong { overflow-wrap: anywhere; }
+.supplier-product-row > summary > strong:last-child { color: var(--green-dark); font-variant-numeric: tabular-nums; }
+.supplier-product-row > summary::after { content: "补充信息"; grid-column: 1 / -1; width: fit-content; color: var(--green); font-size: 10px; font-weight: 700; }
+.supplier-product-row[open] > summary { background: #faf9f5; }
+.supplier-product-extra { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; padding: 12px; border-top: 1px solid #e9e4d9; background: #fdfcf8; }
+.supplier-product-extra > span { display: grid; gap: 3px; min-width: 0; }
+.supplier-product-extra small { color: var(--muted); font-size: 9px; }
+.supplier-product-extra strong { overflow-wrap: anywhere; font-size: 11px; line-height: 1.45; }
 .supplier-default-terms > .form-help { margin: 12px 0 20px; }
 .supplier-detail-page h2 { overflow-wrap: anywhere; }
 .supplier-detail-page .directory-intro > div { min-width: 0; }

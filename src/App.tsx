@@ -55,13 +55,15 @@ const PRODUCT_WORKFLOW_STAGES: Array<{ id: ProductWorkflowStage; label: string }
   { id: "production_complete", label: "生产完成" },
   { id: "shipment_complete", label: "发货完成" },
 ];
-const PRODUCT_TYPES: ProductType[] = ["配件类", "电气类", "安全防护类", "成品设备类", "定制加工类"];
+const PRODUCT_TYPES: ProductType[] = ["配件类", "电气类", "安全防护类", "成品设备类", "定制加工类", "原材料类", "工具类"];
 const PRODUCT_OPTIONS: Record<ProductType, string[]> = {
   配件类: ["五金件", "连接件", "轴承", "合页", "滑轨", "拉手", "锁具", "绳网扣", "弹簧", "脚盘", "管通件", "装饰件", "其他产品（在备注中说明）"],
   电气类: ["电源", "电线缆", "开关", "插座", "灯具/灯带", "变压器", "适配器", "电机", "风机", "传感器", "控制器", "屏幕", "音响", "按钮", "PCB板", "配电箱", "线管线槽", "电子元件", "其他产品（在备注中说明）"],
   安全防护类: ["防护网", "安全带", "化纤钢绳", "包胶钢丝绳", "安全锁扣", "扎带", "包管", "扶手护栏", "其他产品（在备注中说明）"],
   成品设备类: ["互动体感", "数字游戏", "互动墙", "投影设备", "滑梯", "秋千", "摇马", "蹦床面", "小玩具", "充气制品", "海洋球", "木粒/白沙/陶瓷沙", "其他产品（在备注中说明）"],
   定制加工类: ["钣金", "亚克力制品", "CNC", "激光切割", "玻璃钢制品", "文本印刷", "广告制作", "皮革UV", "壁纸", "地胶", "车贴", "玻璃制品", "车木加工", "定制结构件", "其他产品（在备注中说明）"],
+  原材料类: ["钢材", "木材", "板材", "塑料", "泡棉", "布料", "皮革", "油漆", "胶水", "包装材料", "其他产品（在备注中说明）"],
+  工具类: ["手动工具", "电动工具", "测量工具", "切割工具", "焊接工具", "安装工具", "其他产品（在备注中说明）"],
 };
 
 const money = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -305,26 +307,20 @@ function Workbench({ user, onLogout }: { user: User; onLogout: () => void }) {
     const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("yifun-procurement-data");
     const sync = () => { void refresh().then(() => setRefreshVersion(current => current + 1)); };
     const announce = () => { channel?.postMessage("changed"); sync(); };
+    let closed = false;
+    let reconnect: number | undefined;
+    let events: WebSocket | null = null;
+    const connect = () => {
+      events = new WebSocket(`${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/api/realtime`);
+      events.addEventListener("message", sync);
+      events.addEventListener("close", () => { if (!closed) reconnect = window.setTimeout(connect, 1500); });
+    };
+    connect();
     window.addEventListener("procurement:data-changed", announce);
     channel?.addEventListener("message", sync);
-    return () => { window.removeEventListener("procurement:data-changed", announce); channel?.removeEventListener("message", sync); channel?.close(); };
-  }, [user.role, selectedId]);
-  useEffect(() => {
-    if (user.role === "finance" || ["new-order", "new-supplier", "edit-supplier", "supplier-detail", "account"].includes(view)) return;
-    let active = true, loading = false;
-    const sync = async () => {
-      if (loading || document.hidden || document.querySelector("dialog[open]") || document.activeElement?.matches("input, textarea, select")) return;
-      loading = true;
-      try {
-        await refresh();
-        if (active) setRefreshVersion(current => current + 1);
-      } catch { /* Keep the last loaded order until the next refresh. */ }
-      finally { loading = false; }
-    };
-    const timer = window.setInterval(() => void sync(), 3000);
     window.addEventListener("focus", sync);
-    return () => { active = false; window.clearInterval(timer); window.removeEventListener("focus", sync); };
-  }, [view, user.role]);
+    return () => { closed = true; if (reconnect) window.clearTimeout(reconnect); window.removeEventListener("procurement:data-changed", announce); channel?.removeEventListener("message", sync); channel?.close(); events?.close(); window.removeEventListener("focus", sync); };
+  }, [user.role, selectedId]);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(""), 3200);
@@ -429,13 +425,7 @@ function CeoDashboard({ purchaseOrders }: { purchaseOrders: PurchaseOrder[] }) {
     try { setFinanceOrders((await api<{ orders: FinanceOrder[] }>("/api/finance")).orders); setError(""); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "看板数据读取失败"); }
   };
-  useEffect(() => {
-    void load();
-    const timer = window.setInterval(() => {
-      if (!document.hidden && !document.querySelector("dialog[open]") && !document.activeElement?.matches("input, textarea, select")) void load();
-    }, 8000);
-    return () => window.clearInterval(timer);
-  }, []);
+  useEffect(() => { void load(); }, []);
   const today = new Date();
   const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   const month = localDate(today).slice(0, 7);
@@ -1348,7 +1338,7 @@ function SupplierDetail({ readOnly = false, supplier, hasOrders, onBack, onEdit,
     finally { setBusyId(""); }
   }
   if (!supplier) return <div className="directory"><button className="back-button" onClick={onBack}><ArrowLeft size={17} />返回供应商总表</button><p className="table-empty">该供应商已不可用，请返回总表。</p></div>;
-  return <div className="directory supplier-detail-page"><button className="back-button" onClick={onBack}><ArrowLeft size={17} />返回供应商总表</button><div className="directory-intro"><div><h2>{supplier.name}</h2><p>{supplier.code} · 供应商编号固定，资料修改不影响历史订单执行条件。</p></div>{!readOnly && <button type="button" className="primary" onClick={onEdit}><Pencil size={16} />编辑资料与登录账号</button>}</div><section className="supplier-detail-content" aria-label="供应商详情"><div className="supplier-facts"><span><small>联系人</small><strong>{supplier.contact_name || "待补充"}</strong></span><span><small>联系方式</small><strong>{supplier.contact_info || "待补充"}</strong></span><span><small>登录邮箱</small><strong>{supplier.login_email || "未开通"}</strong></span><span><small>地区</small><strong>{supplier.region || "待补充"}</strong></span><span><small>采购负责人</small><strong>{supplier.purchaser_name || "待分配"}</strong></span><span><small>备注</small><strong>{supplier.notes || "—"}</strong></span>{supplier.payment_account && <span className="supplier-payment"><small>收款 / 开票资料</small><pre>{supplier.payment_account}</pre></span>}</div><div className="supplier-product-list"><h3>类型 / 产品</h3>{supplier.products.map((product) => <div className="supplier-product-name" key={product.id}><span>{product.product_type}</span><strong>{product.product_name}</strong></div>)}{!supplier.products.length && <div className="catalog-empty">尚未建立供应产品目录</div>}</div><fieldset disabled={readOnly} className={readOnly ? "office-readonly" : undefined}><SupplierTermsEditor supplier={supplier} onSaved={onTermsSaved} /></fieldset><div className="supplier-danger-zone" hidden={readOnly}>{hasOrders ? <p className="protected-supplier"><Trash2 size={16} /><span><strong>已有采购单，不能移除</strong><small>为保证历史订单、发货和附件记录完整，系统会保留该供应商档案。</small></span></p> : confirmingId === supplier.id ? <div className="remove-confirm"><p><strong>确认移除“{supplier.name}”？</strong><span>供应商将从日常列表移除，登录账号停用；档案、目录和编号仍保留，编号不会重复使用。</span></p><div><button type="button" className="text-button" disabled={busyId === supplier.id} onClick={() => { setConfirmingId(""); setRemoveError(""); }}>取消</button><button type="button" className="danger-button" disabled={busyId === supplier.id} onClick={() => void remove(supplier)}><Trash2 size={16} />{busyId === supplier.id ? "正在移除" : "确认移除"}</button></div></div> : <button type="button" className="remove-supplier-button" onClick={() => { setConfirmingId(supplier.id); setRemoveError(""); }}><Trash2 size={16} />移除供应商</button>}{confirmingId === supplier.id && removeError && <p className="form-error" role="alert">{removeError}</p>}</div></section></div>;
+  return <div className="directory supplier-detail-page"><button className="back-button" onClick={onBack}><ArrowLeft size={17} />返回供应商总表</button><div className="directory-intro"><div><h2>{supplier.name}</h2><p>{supplier.code} · 供应商编号固定，资料修改不影响历史订单执行条件。</p></div>{!readOnly && <button type="button" className="primary" onClick={onEdit}><Pencil size={16} />编辑资料与登录账号</button>}</div><section className="supplier-detail-content" aria-label="供应商详情"><div className="supplier-facts"><span><small>联系人</small><strong>{supplier.contact_name || "待补充"}</strong></span><span><small>联系方式</small><strong>{supplier.contact_info || "待补充"}</strong></span><span><small>登录邮箱</small><strong>{supplier.login_email || "未开通"}</strong></span><span><small>地区</small><strong>{supplier.region || "待补充"}</strong></span><span><small>采购负责人</small><strong>{supplier.purchaser_name || "待分配"}</strong></span><span><small>备注</small><strong>{supplier.notes || "—"}</strong></span>{supplier.payment_account && <span className="supplier-payment"><small>收款 / 开票资料</small><pre>{supplier.payment_account}</pre></span>}</div><div className="supplier-product-list"><h3>供应产品目录</h3>{supplier.products.length ? <div className="supplier-product-table"><div className="supplier-product-head"><span>产品类型</span><span>产品名称</span><span>常规规格</span><span>单位</span><span>参考单价</span></div>{supplier.products.map((product) => <details className="supplier-product-row" key={product.id}><summary><span>{product.product_type}</span><strong>{product.product_name}</strong><span>{product.usual_specification || "待补充"}</span><span>{product.unit || "待补充"}</span><strong>{product.default_unit_price === null ? "待填写" : `¥ ${money.format(product.default_unit_price)}`}</strong></summary>{[product.production_cycle, product.transport_method, product.arrival_time, product.settlement_method, product.special_invoice_tax, product.ordinary_invoice_tax, product.order_required_materials, product.notes].some(Boolean) && <div className="supplier-product-extra"><span><small>制作周期</small><strong>{product.production_cycle || "—"}</strong></span><span><small>运输方式</small><strong>{product.transport_method || "—"}</strong></span><span><small>到货时间</small><strong>{product.arrival_time || "—"}</strong></span><span><small>结款方式</small><strong>{product.settlement_method || "—"}</strong></span><span><small>专票税点</small><strong>{product.special_invoice_tax || "—"}</strong></span><span><small>普票税点</small><strong>{product.ordinary_invoice_tax || "—"}</strong></span><span><small>下单所需资料</small><strong>{product.order_required_materials || "—"}</strong></span><span><small>产品备注</small><strong>{product.notes || "—"}</strong></span></div>}</details>)}</div> : <div className="catalog-empty">尚未建立供应产品目录</div>}</div><fieldset disabled={readOnly} className={readOnly ? "office-readonly" : undefined}><SupplierTermsEditor supplier={supplier} onSaved={onTermsSaved} /></fieldset><div className="supplier-danger-zone" hidden={readOnly}>{hasOrders ? <p className="protected-supplier"><Trash2 size={16} /><span><strong>已有采购单，不能移除</strong><small>为保证历史订单、发货和附件记录完整，系统会保留该供应商档案。</small></span></p> : confirmingId === supplier.id ? <div className="remove-confirm"><p><strong>确认移除“{supplier.name}”？</strong><span>供应商将从日常列表移除，登录账号停用；档案、目录和编号仍保留，编号不会重复使用。</span></p><div><button type="button" className="text-button" disabled={busyId === supplier.id} onClick={() => { setConfirmingId(""); setRemoveError(""); }}>取消</button><button type="button" className="danger-button" disabled={busyId === supplier.id} onClick={() => void remove(supplier)}><Trash2 size={16} />{busyId === supplier.id ? "正在移除" : "确认移除"}</button></div></div> : <button type="button" className="remove-supplier-button" onClick={() => { setConfirmingId(supplier.id); setRemoveError(""); }}><Trash2 size={16} />移除供应商</button>}{confirmingId === supplier.id && removeError && <p className="form-error" role="alert">{removeError}</p>}</div></section></div>;
 }
 
 type CatalogDraft = {

@@ -30,9 +30,9 @@ test('supplier matching preserves manual defaults, product differences and old P
   assert.equal((await request('buyer', '/suppliers/supplier-sp-1001/commercial-terms', { terms: mapped, revision: 2 })).status, 200);
 });
 
-export function fixture({ legacy = false } = {}) {
+export function fixture({ legacy = false, metrics } = {}) {
   const db = new DatabaseSync(':memory:');
-  for (const name of migrations.filter((name) => !legacy || (!name.startsWith('0009') && !name.startsWith('0013') && !name.startsWith('0019') && !name.startsWith('0020') && !name.startsWith('0021') && !name.startsWith('0022') && !name.startsWith('0026') && !name.startsWith('0028') && !name.startsWith('0029') && !name.startsWith('0030') && !name.startsWith('0031') && !name.startsWith('0039')))) db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8'));
+  for (const name of migrations.filter((name) => !legacy || (!name.startsWith('0009') && !name.startsWith('0013') && !name.startsWith('0019') && !name.startsWith('0020') && !name.startsWith('0021') && !name.startsWith('0022') && !name.startsWith('0026') && !name.startsWith('0028') && !name.startsWith('0029') && !name.startsWith('0030') && !name.startsWith('0031') && !name.startsWith('0039') && !name.startsWith('0042')))) db.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8'));
   const timestamp = '2026-09-01T00:00:00.000Z';
   for (const [user, role, supplier] of [['buyer', 'purchaser', null], ['finance', 'purchaser', null], ['boss', 'purchaser', null], ['vendor', 'supplier', 'supplier-sp-1001'], ['other', 'supplier', 'supplier-sp-1002']]) {
     db.prepare('INSERT INTO users (id,email,name,role,supplier_id,password_hash,password_salt,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)').run(user, `${user}@example.test`, user, role, supplier, 'unused', 'unused', timestamp, timestamp);
@@ -46,6 +46,7 @@ export function fixture({ legacy = false } = {}) {
   db.exec("INSERT INTO order_settlements(order_id) VALUES ('order')");
   const objects = new Map([['test-file', { body: 'fixture', writeHttpMetadata() {}, httpEtag: 'test' }]]);
   const prepare = (sql) => {
+    if (metrics) metrics.prepares += 1;
     let params = {};
     const execute = () => {
       const statement = db.prepare(sql);
@@ -70,6 +71,16 @@ export function fixture({ legacy = false } = {}) {
   const confirm = () => request('vendor', '/orders/order/confirm', { promisedShipDate: '2026-09-20' }, 'POST');
   return { db, request, confirm, objects };
 }
+
+test('dashboard batches product histories instead of querying once per SKU', async () => {
+  const metrics = { prepares: 0 };
+  const { db, request } = fixture({ metrics });
+  for (let index = 20; index < 120; index += 1) db.prepare(`INSERT INTO order_items (id,order_id,product_name,product_type,quantity,unit_price,amount,created_at) VALUES (?,'order',?,'配件类',5,10,50,'2026-09-01T00:00:00.000Z')`).run(`item-${index}`, `产品 ${index}`);
+  const before = metrics.prepares;
+  const response = await request('buyer', '/dashboard', undefined, 'GET');
+  assert.equal(response.status, 200);
+  assert.ok(metrics.prepares - before <= 18, `dashboard used ${metrics.prepares - before} database statements for 120 products`);
+});
 
 function seedProductionPhotos(db) {
   db.exec("INSERT INTO attachments (id,order_id,item_id,kind,file_name,content_type,r2_key,uploaded_by,created_at) SELECT 'real-' || id,order_id,id,'production_photo','real.png','image/png','real-' || id,'vendor','2026-09-03' FROM order_items WHERE order_id='order'");
@@ -360,6 +371,32 @@ const terms = { production: '30 天', transport: '陆运，含运费', credit: '
 const poBody = (poNumber, extra = {}) => ({ poNumber, supplierId: 'supplier-sp-1001', projectName: '测试快照', orderDate: '2026-09-01', requiredShipDate: '2026-09-20', purchaserName: 'buyer', items: [{ productName: '测试', productType: '配件类', quantity: 1, unitPrice: 100 }], ...extra });
 const verifyTerms = (request, overrides = {}) => request('buyer', '/orders/order/commercial-terms', { terms, confirmed: true, revision: 0, reason: '依据原合同核实', ...overrides });
 const entryBody = (kind, amount, reference, extra = {}) => ({ requestId: crypto.randomUUID(), kind, amount, reference, recordDate: '2026-09-03', note: '测试凭证', ...extra });
+
+test('raw materials and tools are valid product types for supplier catalogs and purchase orders', async () => {
+  const { db, request } = fixture();
+  const supplier = await request('buyer', '/suppliers', {
+    name: '类型测试供应商', contactName: '测试联系人', contactInfo: '13800000000', purchaserName: 'buyer',
+    products: [
+      { productType: '原材料类', productName: '测试钢材', usualSpecification: 'Q235', unit: '吨', defaultUnitPrice: 3800 },
+      { productType: '工具类', productName: '测试手动工具', usualSpecification: '套装', unit: '套', defaultUnitPrice: 120 },
+    ],
+  }, 'POST');
+  assert.equal(supplier.status, 201);
+  const { supplierId } = await supplier.json();
+  assert.deepEqual(db.prepare('SELECT product_category FROM supplier_products WHERE supplier_id=? ORDER BY product_category').all(supplierId).map((row) => row.product_category), ['原材料类', '工具类']);
+  const order = await request('buyer', '/orders', poBody('TYPE-001', {
+    supplierId,
+    items: [
+      { productName: '测试钢材', productType: '原材料类', quantity: 1, unitPrice: 3800 },
+      { productName: '测试手动工具', productType: '工具类', quantity: 1, unitPrice: 120 },
+    ],
+  }), 'POST');
+  assert.equal(order.status, 201);
+  const { orderId } = await order.json();
+  assert.deepEqual(db.prepare('SELECT product_category FROM order_items WHERE order_id=? ORDER BY product_category').all(orderId).map((row) => row.product_category), ['原材料类', '工具类']);
+  const dashboard = await (await request('buyer', '/dashboard', undefined, 'GET')).json();
+  assert.deepEqual(dashboard.orders.find((entry) => entry.id === orderId).items.map((item) => item.product_type).sort(), ['原材料类', '工具类']);
+});
 
 test('supplier defaults copy into new PO, supplier edits never touch its snapshot or old orders', async () => {
   const { db, request } = fixture();

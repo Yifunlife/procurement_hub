@@ -2,6 +2,7 @@ interface Env {
   DB: D1Database;
   FILES: R2Bucket;
   ASSETS: Fetcher;
+  REALTIME?: DurableObjectNamespace;
   SETUP_SECRET: string;
 }
 
@@ -24,7 +25,13 @@ const SESSION_SECONDS = 60 * 60 * 24 * 7;
 const PASSWORD_ITERATIONS = 100_000;
 const AUTH_WINDOW_MS = 15 * 60 * 1000;
 const AUTH_MAX_ATTEMPTS = 5;
-const PRODUCT_TYPES = new Set(["配件类", "电气类", "安全防护类", "成品设备类", "定制加工类"]);
+const PRODUCT_TYPES = new Set(["配件类", "电气类", "安全防护类", "成品设备类", "定制加工类", "原材料类", "工具类"]);
+const STORED_PRODUCT_TYPES = new Set(["配件类", "电气类", "安全防护类", "成品设备类", "定制加工类"]);
+const productTypeStorage = (productType: string) => STORED_PRODUCT_TYPES.has(productType) ? { productType, productCategory: "" } : { productType: "配件类", productCategory: productType };
+const displayProductType = (product: Record<string, unknown>) => {
+  if (product.product_category) product.product_type = product.product_category;
+  return product;
+};
 
 const json = (data: unknown, status = 200, headers?: HeadersInit) =>
   Response.json(data, { status, headers });
@@ -33,6 +40,26 @@ const error = (message: string, status = 400) => json({ error: message }, status
 const now = () => new Date().toISOString();
 const businessToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Australia/Sydney" }).format(new Date());
 const id = () => crypto.randomUUID();
+
+export class RealtimeHub {
+  constructor(private readonly state: DurableObjectState) {}
+
+  async fetch(request: Request) {
+    if (request.headers.get("Upgrade") === "websocket") {
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+      this.state.acceptWebSocket(server);
+      return new Response(null, { status: 101, webSocket: client });
+    }
+    if (request.method === "POST") {
+      for (const socket of this.state.getWebSockets()) socket.send("changed");
+      return new Response(null, { status: 204 });
+    }
+    return new Response("Not found", { status: 404 });
+  }
+
+  webSocketMessage() {}
+}
 
 function bytesToHex(bytes: ArrayBuffer | Uint8Array) {
   return [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, "0")).join("");
@@ -262,8 +289,9 @@ async function dashboard(request: Request, env: Env) {
     // Explicit allowlist: never return prices, terms, free-text histories or source attachments.
     const visible = [];
     for (const order of orders) {
-      const products = (await env.DB.prepare("SELECT id, order_id, model, product_name, color, product_type, material_process, installation_method, quantity, unit, workflow_stage, completion_date, shipped_quantity, acceptance_status, received_quantity, stocked_quantity, received_at, received_by, stocked_at, stocked_by, freight_payment_status, freight_payment_revision, packaging_volume, packaging_volume_revision, production_completed, production_completed_at, production_completed_by, production_revision FROM order_items WHERE order_id = ?1 ORDER BY created_at").bind(order.id).all()).results;
+      const products = (await env.DB.prepare("SELECT id, order_id, model, product_name, color, product_type, product_category, material_process, installation_method, quantity, unit, workflow_stage, completion_date, shipped_quantity, acceptance_status, received_quantity, stocked_quantity, received_at, received_by, stocked_at, stocked_by, freight_payment_status, freight_payment_revision, packaging_volume, packaging_volume_revision, production_completed, production_completed_at, production_completed_by, production_revision FROM order_items WHERE order_id = ?1 ORDER BY created_at").bind(order.id).all()).results;
       for (const product of products) {
+        displayProductType(product);
         product.warehouse_history = (await env.DB.prepare("SELECT action,quantity,actor_name,COALESCE(record_date,substr(created_at,1,10)) AS record_date,created_at FROM warehouse_records WHERE item_id=?1 ORDER BY created_at,id").bind(product.id).all()).results;
         product.acceptance_history = [];
         product.correction_history = [];
@@ -292,6 +320,9 @@ async function dashboard(request: Request, env: Env) {
   let reminders: Array<Record<string, unknown>> = [];
   let deliveryHistory: Array<Record<string, unknown>> = [];
   let commercialHistory: Array<Record<string, unknown>> = [];
+  let warehouseHistory: Array<Record<string, unknown>> = [];
+  let warehouseReceipts: Array<Record<string, unknown>> = [];
+  let correctionHistory: Array<Record<string, unknown>> = [];
   if (visibleOrderIds.length) {
     const placeholders = visibleOrderIds.map((_, index) => `?${index + 1}`).join(",");
     const [itemsResult, attachmentsResult, eventsResult, shipmentsResult, shipmentAttachmentsResult, remindersResult, deliveryHistoryResult, commercialHistoryResult, shipmentCorrectionsResult] = await env.DB.batch([
@@ -315,13 +346,33 @@ async function dashboard(request: Request, env: Env) {
     commercialHistory = commercialHistoryResult.results as Array<Record<string, unknown>>;
     shipmentCorrections = shipmentCorrectionsResult.results as Array<Record<string, unknown>>;
   }
+  const itemIds = items.map((item) => String(item.id));
+  if (itemIds.length) {
+    const placeholders = itemIds.map((_, index) => `?${index + 1}`).join(",");
+    const statements: D1PreparedStatement[] = [
+      env.DB.prepare(`SELECT item_id,action,quantity,actor_name,COALESCE(record_date,substr(created_at,1,10)) AS record_date,created_at FROM warehouse_records WHERE item_id IN (${placeholders}) ORDER BY created_at,id`).bind(...itemIds),
+      env.DB.prepare(`SELECT item_id,action,quantity,reason,actor_name,created_at FROM item_corrections WHERE item_id IN (${placeholders}) ORDER BY created_at,id`).bind(...itemIds),
+    ];
+    if (user.role !== "supplier") statements.push(env.DB.prepare(`SELECT id,item_id,received_quantity,received_date,status,exception_type,exception_quantity,exception_notes,inspected_at,inspected_by,updated_at FROM warehouse_receipts WHERE item_id IN (${placeholders}) ORDER BY updated_at DESC,id DESC`).bind(...itemIds));
+    const results = await env.DB.batch(statements);
+    warehouseHistory = results[0].results as Array<Record<string, unknown>>;
+    correctionHistory = results[1].results as Array<Record<string, unknown>>;
+    warehouseReceipts = user.role === "supplier" ? [] : results[2].results as Array<Record<string, unknown>>;
+  }
+  const historiesByItem = new Map<string, Array<Record<string, unknown>>>();
+  const receiptsByItem = new Map<string, Array<Record<string, unknown>>>();
+  const correctionsByItem = new Map<string, Array<Record<string, unknown>>>();
+  for (const row of warehouseHistory) { const rows = historiesByItem.get(String(row.item_id)) || []; rows.push(row); historiesByItem.set(String(row.item_id), rows); }
+  for (const row of warehouseReceipts) { const rows = receiptsByItem.get(String(row.item_id)) || []; rows.push(row); receiptsByItem.set(String(row.item_id), rows); }
+  for (const row of correctionHistory) { const rows = correctionsByItem.get(String(row.item_id)) || []; rows.push(row); correctionsByItem.set(String(row.item_id), rows); }
   for (const item of items) {
-    item.warehouse_history = (await env.DB.prepare("SELECT action,quantity,actor_name,COALESCE(record_date,substr(created_at,1,10)) AS record_date,created_at FROM warehouse_records WHERE item_id=?1 ORDER BY created_at,id").bind(item.id).all()).results;
-    if (user.role !== "supplier") item.warehouse_receipts = (await env.DB.prepare("SELECT id,received_quantity,received_date,status,exception_type,exception_quantity,exception_notes,inspected_at,inspected_by,updated_at FROM warehouse_receipts WHERE item_id=?1 ORDER BY updated_at DESC,id DESC").bind(item.id).all()).results;
+    displayProductType(item);
+    item.warehouse_history = historiesByItem.get(String(item.id)) || [];
+    if (user.role !== "supplier") item.warehouse_receipts = receiptsByItem.get(String(item.id)) || [];
     item.acceptance_history = JSON.parse(String(item.acceptance_json || "[]"));
+    item.correction_history = correctionsByItem.get(String(item.id)) || [];
     delete item.acceptance_json;
   }
-  for (const item of items) item.correction_history=(await env.DB.prepare('SELECT action,quantity,reason,actor_name,created_at FROM item_corrections WHERE item_id=?1 ORDER BY created_at,id').bind(item.id).all()).results;
   for (const shipment of shipments) { shipment.attachments = shipmentAttachments.filter((attachment) => attachment.shipment_id === shipment.id); shipment.items = JSON.parse(String(shipment.items_json || "[]")); shipment.corrections = shipmentCorrections.filter((correction) => correction.shipment_id === shipment.id); delete shipment.items_json; }
   for (const order of orders) {
     order.items = items.filter((item) => item.order_id === order.id);
@@ -339,6 +390,7 @@ async function dashboard(request: Request, env: Env) {
     : [];
   if (suppliers.length) {
     const supplierProducts = (await env.DB.prepare("SELECT * FROM supplier_products ORDER BY product_type, product_name").all()).results as Array<Record<string, unknown>>;
+    supplierProducts.forEach(displayProductType);
     for (const supplier of suppliers) supplier.products = supplierProducts.filter((product) => product.supplier_id === supplier.id);
     const defaults = (await env.DB.prepare("SELECT * FROM supplier_commercial_terms").all()).results;
     for (const supplier of suppliers) {
@@ -389,10 +441,11 @@ function supplierProductsFrom(body: SupplierBody) {
 }
 
 function supplierProductInsert(env: Env, supplierId: string, product: SupplierProductBody, timestamp: string) {
+  const type = productTypeStorage(product.productType!);
   return env.DB.prepare(
-    `INSERT INTO supplier_products (id, supplier_id, product_type, product_name, usual_specification, unit, default_unit_price, production_cycle, transport_method, arrival_time, settlement_method, special_invoice_tax, ordinary_invoice_tax, order_required_materials, notes, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16)`,
-  ).bind(id(), supplierId, product.productType, product.productName!.trim(), product.usualSpecification?.trim() || "", product.unit?.trim() || "", product.defaultUnitPrice == null ? null : Number(product.defaultUnitPrice), product.productionCycle?.trim() || "", product.transportMethod?.trim() || "", product.arrivalTime?.trim() || "", product.settlementMethod?.trim() || "", product.specialInvoiceTax?.trim() || "", product.ordinaryInvoiceTax?.trim() || "", product.orderRequiredMaterials?.trim() || "", product.notes?.trim() || "", timestamp);
+    `INSERT INTO supplier_products (id, supplier_id, product_type, product_category, product_name, usual_specification, unit, default_unit_price, production_cycle, transport_method, arrival_time, settlement_method, special_invoice_tax, ordinary_invoice_tax, order_required_materials, notes, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17)`,
+  ).bind(id(), supplierId, type.productType, type.productCategory, product.productName!.trim(), product.usualSpecification?.trim() || "", product.unit?.trim() || "", product.defaultUnitPrice == null ? null : Number(product.defaultUnitPrice), product.productionCycle?.trim() || "", product.transportMethod?.trim() || "", product.arrivalTime?.trim() || "", product.settlementMethod?.trim() || "", product.specialInvoiceTax?.trim() || "", product.ordinaryInvoiceTax?.trim() || "", product.orderRequiredMaterials?.trim() || "", product.notes?.trim() || "", timestamp);
 }
 
 async function createSupplier(request: Request, env: Env) {
@@ -568,12 +621,13 @@ async function updateOrderItemDetails(request: Request, env: Env, orderId: strin
     if (Number(finance?.count || 0) > 0) return error("该采购单已有财务记录，数量和单价不能修改", 409);
   }
   const timestamp = now();
+  const type = productTypeStorage(body.productType);
   const packagingChanged = body.packagingVolume!.trim() !== String(item.packaging_volume || "");
-  const statements = [env.DB.prepare(`UPDATE order_items SET model=?1,product_name=?2,color=?3,product_type=?4,quantity=?5,unit=?6,unit_price=?7,amount=?8,
-    specification=?9,material_process=?10,installation_method=?11,packaging_volume=?12,
-    packaging_volume_revision=packaging_volume_revision+?13,packaging_volume_by=CASE WHEN ?13=1 THEN ?14 ELSE packaging_volume_by END,
-    packaging_volume_at=CASE WHEN ?13=1 THEN ?15 ELSE packaging_volume_at END WHERE id=?16 AND order_id=?17`)
-    .bind(body.model!.trim(), body.productName.trim(), body.color!.trim(), body.productType, quantity, body.unit!.trim(), unitPrice, amount, body.specification!.trim(), body.materialProcess!.trim(), body.installationMethod!.trim(), body.packagingVolume!.trim(), packagingChanged ? 1 : 0, actor.id, timestamp, itemId, orderId),
+  const statements = [env.DB.prepare(`UPDATE order_items SET model=?1,product_name=?2,color=?3,product_type=?4,product_category=?5,quantity=?6,unit=?7,unit_price=?8,amount=?9,
+    specification=?10,material_process=?11,installation_method=?12,packaging_volume=?13,
+    packaging_volume_revision=packaging_volume_revision+?14,packaging_volume_by=CASE WHEN ?14=1 THEN ?15 ELSE packaging_volume_by END,
+    packaging_volume_at=CASE WHEN ?14=1 THEN ?16 ELSE packaging_volume_at END WHERE id=?17 AND order_id=?18`)
+    .bind(body.model!.trim(), body.productName.trim(), body.color!.trim(), type.productType, type.productCategory, quantity, body.unit!.trim(), unitPrice, amount, body.specification!.trim(), body.materialProcess!.trim(), body.installationMethod!.trim(), body.packagingVolume!.trim(), packagingChanged ? 1 : 0, actor.id, timestamp, itemId, orderId),
     env.DB.prepare("INSERT INTO order_events(id,order_id,event_type,detail,actor_id,actor_name,created_at) VALUES (?1,?2,'item_details_updated',?3,?4,?5,?6)").bind(id(), orderId, `更正产品资料：${String(item.product_name)} → ${body.productName.trim()}`, actor.id, actor.name, timestamp),
     env.DB.prepare("UPDATE purchase_orders SET updated_at=?2 WHERE id=?1").bind(orderId, timestamp),
   ];
@@ -646,9 +700,10 @@ async function createOrder(request: Request, env: Env) {
     ...body.items.map((item, index) => {
       const quantity = Number(item.quantity);
       const unitPrice = Number(item.unitPrice);
+      const type = productTypeStorage(item.productType!);
       return env.DB.prepare(
-        "INSERT INTO order_items (id, order_id, model, product_name, color, product_type, quantity, unit_price, amount, specification, unit, created_at, material_process, installation_method, packaging_volume) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-      ).bind(itemIds[index], orderId, item.model?.trim() || "", item.productName!.trim(), item.color?.trim() || "", item.productType, quantity, unitPrice, Number((quantity * unitPrice).toFixed(2)), item.specification?.trim() || "", item.unit?.trim() || "", timestamp, item.materialProcess?.trim() || "", item.installationMethod?.trim() || "", item.packagingVolume?.trim() || "");
+        "INSERT INTO order_items (id, order_id, model, product_name, color, product_type, product_category, quantity, unit_price, amount, specification, unit, created_at, material_process, installation_method, packaging_volume) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+      ).bind(itemIds[index], orderId, item.model?.trim() || "", item.productName!.trim(), item.color?.trim() || "", type.productType, type.productCategory, quantity, unitPrice, Number((quantity * unitPrice).toFixed(2)), item.specification?.trim() || "", item.unit?.trim() || "", timestamp, item.materialProcess?.trim() || "", item.installationMethod?.trim() || "", item.packagingVolume?.trim() || "");
     }),
     env.DB.prepare("UPDATE purchase_orders SET commercial_terms_json = ?1, commercial_status = ?2, commercial_revision = 1 WHERE id = ?3").bind(JSON.stringify(terms), commercialStatus, orderId),
     env.DB.prepare("INSERT INTO order_settlements (order_id, net_cents, tax_cents, payable_cents) VALUES (?1, ?2, ?3, ?4)").bind(orderId, amounts.net, amounts.tax, amounts.payable),
@@ -1049,10 +1104,10 @@ async function stockWarehouseReceipt(request: Request, env: Env, receiptId: stri
 async function warehouseQueue(request: Request, env: Env) {
   const actor = await requireSession(request, env);
   if (!canViewWarehouse(actor)) return error("没有权限查看仓库验收",403);
-  const arrivals = (await env.DB.prepare(`SELECT po.id AS order_id,po.po_number,po.project_name,s.name AS supplier_name,s.is_online_purchase,i.id AS item_id,i.product_name,i.model,i.product_type,i.specification,i.quantity,i.unit,i.shipped_quantity,i.received_quantity,po.carrier,po.tracking_number,po.shipped_at
+  const arrivals = (await env.DB.prepare(`SELECT po.id AS order_id,po.po_number,po.project_name,s.name AS supplier_name,s.is_online_purchase,i.id AS item_id,i.product_name,i.model,COALESCE(NULLIF(i.product_category,''),i.product_type) AS product_type,i.specification,i.quantity,i.unit,i.shipped_quantity,i.received_quantity,po.carrier,po.tracking_number,po.shipped_at
     FROM order_items i JOIN purchase_orders po ON po.id=i.order_id JOIN suppliers s ON s.id=po.supplier_id
     WHERE po.archived_at IS NULL AND i.shipped_quantity>i.received_quantity ORDER BY po.shipped_at DESC,po.updated_at DESC`).all()).results;
-  const receipts = (await env.DB.prepare(`SELECT r.*,po.po_number,po.project_name,s.name AS supplier_name,s.is_online_purchase,i.product_name,i.model,i.product_type,i.specification,i.unit,i.quantity AS ordered_quantity,i.shipped_quantity,i.received_quantity AS item_received_quantity
+  const receipts = (await env.DB.prepare(`SELECT r.*,po.po_number,po.project_name,s.name AS supplier_name,s.is_online_purchase,i.product_name,i.model,COALESCE(NULLIF(i.product_category,''),i.product_type) AS product_type,i.specification,i.unit,i.quantity AS ordered_quantity,i.shipped_quantity,i.received_quantity AS item_received_quantity
     FROM warehouse_receipts r JOIN purchase_orders po ON po.id=r.order_id JOIN suppliers s ON s.id=po.supplier_id JOIN order_items i ON i.id=r.item_id
     WHERE po.archived_at IS NULL ORDER BY r.updated_at DESC`).all()).results as Array<Record<string, unknown>>;
   const receiptIds = receipts.map(receipt => String(receipt.id));
@@ -1590,6 +1645,19 @@ async function downloadShipmentAttachment(request: Request, env: Env, attachment
   return new Response(object.body, { headers });
 }
 
+async function realtime(request: Request, env: Env) {
+  await requireSession(request, env);
+  if (!env.REALTIME) return error("实时刷新服务暂不可用", 503);
+  return env.REALTIME.get(env.REALTIME.idFromName("procurement")).fetch(request);
+}
+
+function notifyRealtime(env: Env, ctx?: ExecutionContext) {
+  if (!env.REALTIME) return;
+  const hub = env.REALTIME.get(env.REALTIME.idFromName("procurement"));
+  const notification = hub.fetch("https://realtime.internal/change", { method: "POST" }).catch((cause) => console.error("实时刷新通知失败", cause));
+  if (ctx) ctx.waitUntil(notification);
+}
+
 async function handleApi(request: Request, env: Env) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -1609,6 +1677,7 @@ async function handleApi(request: Request, env: Env) {
     const user = await getSession(request, env);
     return json({ authenticated: Boolean(user), user });
   }
+  if (path === "/api/realtime" && request.method === "GET") return realtime(request, env);
   if (path === "/api/dashboard" && request.method === "GET") return dashboard(request, env);
   if (path === "/api/warehouse/queue" && request.method === "GET") return warehouseQueue(request, env);
   if (path === "/api/warehouse/receipts" && request.method === "POST") return createWarehouseReceipt(request, env);
@@ -1713,10 +1782,14 @@ async function generateOrderReminders(env: Env) {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     try {
       const url = new URL(request.url);
-      if (url.pathname.startsWith("/api/")) return await handleApi(request, env);
+      if (url.pathname.startsWith("/api/")) {
+        const response = await handleApi(request, env);
+        if (request.method !== "GET" && response.ok) notifyRealtime(env, ctx);
+        return response;
+      }
       return env.ASSETS.fetch(request);
     } catch (caught) {
       if (caught instanceof Response) return caught;

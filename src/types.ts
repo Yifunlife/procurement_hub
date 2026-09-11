@@ -17,7 +17,7 @@ export type FinanceOrder = {
   entries: FinancialEntry[];
 };
 export type Status = "pending_confirmation" | "in_production" | "ready_to_ship" | "partial_shipped" | "shipped" | "received" | "completed";
-export type ProductType = "配件类" | "电气类" | "安全防护类" | "成品设备类" | "定制加工类";
+export type ProductType = "配件类" | "电气类" | "安全防护类" | "成品设备类" | "定制加工类" | "原材料类" | "工具类";
 export type ProductWorkflowStage = "queued" | "in_production" | "production_complete" | "ready_to_ship" | "shipment_complete";
 
 export type User = {
