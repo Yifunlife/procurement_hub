@@ -951,34 +951,47 @@ function BatchStockButton({order,user,selectedIds,busy,onBusy,onSaved,onChanged}
   return <><button type="button" className="primary" disabled={busy || !items.length} onClick={()=>void submit()}>批量入库（{items.length}）</button><span role="status">{message}</span></>;
 }
 
+type BatchProductAction = "production" | "complete" | "acceptance";
+
 function ProductTable({ order, user, onChanged }: { order: PurchaseOrder; user: User; onChanged: (message: string) => void | Promise<void> }) {
   const onlinePurchase = order.is_online_purchase === 1;
   const progress = productionTotals(order);
   const meterTone = ["received", "completed"].includes(order.status) ? "received" : ["partial_shipped", "shipped"].includes(order.status) ? "shipped" : !["shipped", "received", "completed"].includes(order.status) && daysToShip(order) >= 0 && daysToShip(order) <= 3 ? "urgent" : order.status === "ready_to_ship" || progress.progress === 100 ? "ready" : order.status === "in_production" ? "production" : "pending";
   const [selectedItems,setSelectedItems]=useState<string[]>([]);
-  const [batchBusy,setBatchBusy]=useState(false), [batchResult,setBatchResult]=useState("");
+  const [batchBusy,setBatchBusy]=useState(false), [batchResult,setBatchResult]=useState(""), [batchAction,setBatchAction]=useState<BatchProductAction | "">("");
   const batchLock=useRef(false);
-  const selectable=onlinePurchase ? [] : order.items.filter(item=>canPurchase(user.role) && !order.archived_at && item.shipped_quantity===0 && item.acceptance_status==="pending" && (user.role==="admin" || (["in_production","ready_to_ship","partial_shipped"].includes(order.status) && ["production_complete","ready_to_ship"].includes(item.workflow_stage) && (item.production_photo_waived===1 || order.attachments.some(file=>file.item_id===item.id && file.kind==="production_photo")))));
-  const selected=selectable.filter(item=>selectedItems.includes(item.id));
-  async function acceptSelected() {
-    if(batchLock.current || !selected.length) return;
-    batchLock.current=true;setBatchBusy(true);setBatchResult("正在验收…");
+  const selected=order.items.filter(item=>selectedItems.includes(item.id));
+  const canBatchWorkflow = !onlinePurchase && !order.archived_at && (user.role === "supplier" || canPurchase(user.role)) && (user.role === "admin" || user.supplier_operations === 1 || ["in_production","ready_to_ship","partial_shipped"].includes(order.status));
+  const canBatchAcceptance = !onlinePurchase && canPurchase(user.role) && !order.archived_at;
+  const canSelectProducts = canBatchWorkflow || canBatchAcceptance || user.role === "warehouse";
+  const hasProductionEvidence = (item: PurchaseOrder["items"][number]) => item.production_photo_waived === 1 || order.attachments.some(file => file.item_id === item.id && file.kind === "production_photo");
+  const canAcceptItem = (item: PurchaseOrder["items"][number]) => canBatchAcceptance && item.shipped_quantity === 0 && item.acceptance_status === "pending" && (user.role === "admin" || (["in_production","ready_to_ship","partial_shipped"].includes(order.status) && ["production_complete","ready_to_ship"].includes(item.workflow_stage) && hasProductionEvidence(item)));
+  const eligibleFor = (action: BatchProductAction) => selected.filter(item => action === "acceptance" ? canAcceptItem(item) : canBatchWorkflow && item.shipped_quantity === 0 && (action === "production" || hasProductionEvidence(item)));
+  const actionLabel: Record<BatchProductAction, string> = { production: "设为生产中", complete: "设为生产完成", acceptance: "采购验收" };
+  const eligible = batchAction ? eligibleFor(batchAction) : [];
+  async function runSelectedAction() {
+    if (!batchAction || batchLock.current || !eligible.length) return;
+    const action = batchAction;
+    const items = eligible;
+    const skipped = selected.length - items.length;
+    batchLock.current=true;setBatchBusy(true);setBatchResult(`正在${actionLabel[action]}…`);
     let completed=0;const failures:string[]=[];
     try {
-      for(const item of selected) {
+      for(const item of items) {
         try {
-          await api(`/api/orders/${order.id}/items/${item.id}/acceptance`,{method:"POST",body:JSON.stringify({decision:"approved",reason:"",revision:item.production_revision})});
+          if (action === "acceptance") await api(`/api/orders/${order.id}/items/${item.id}/acceptance`,{method:"POST",body:JSON.stringify({decision:"approved",reason:"",revision:item.production_revision})});
+          else await api(`/api/orders/${order.id}/items/${item.id}/production`,{method:"PATCH",body:JSON.stringify(action === "production" ? { workflowStage: "in_production" } : { workflowStage: "production_complete", ...(item.production_photo_waived === 1 ? { photoNotProvided: true } : {}) })});
           completed++;setSelectedItems(current=>current.filter(id=>id!==item.id));
         } catch(cause) { failures.push(`${item.product_name}：${cause instanceof Error ? cause.message : "保存失败"}`); }
-        setBatchResult(`已处理 ${completed+failures.length} / ${selected.length}`);
+        setBatchResult(`已处理 ${completed+failures.length} / ${items.length}`);
       }
-      await onChanged(`批量验收完成：成功 ${completed} 项${failures.length ? `，失败 ${failures.length} 项` : ""}`);
-      setBatchResult(failures.length ? `成功 ${completed} 项；${failures.join("；")}` : `已验收 ${completed} 项`);
+      await onChanged(`批量${actionLabel[action]}：成功 ${completed} 项${skipped ? `，当前不符合条件 ${skipped} 项` : ""}${failures.length ? `，失败 ${failures.length} 项` : ""}`);
+      setBatchResult(failures.length ? `成功 ${completed} 项；${failures.join("；")}` : `已${actionLabel[action]} ${completed} 项${skipped ? `；${skipped} 项未处理` : ""}`);
+      setBatchAction("");
     } finally { batchLock.current=false;setBatchBusy(false); }
   }
   const [detailsOpen, setDetailsOpen] = useState(true);
   const [expandedImage, setExpandedImage] = useState<{ src: string; name: string } | null>(null);
-  const canSelectProducts = canPurchase(user.role) || user.role === "warehouse";
   const imageTrigger = useRef<HTMLElement | null>(null);
   const openImage = (image: { src: string; name: string }) => {
     imageTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -987,7 +1000,7 @@ function ProductTable({ order, user, onChanged }: { order: PurchaseOrder; user: 
   const finishCloseImage = () => { setExpandedImage(null); requestAnimationFrame(() => imageTrigger.current?.focus()); };
 
   return <section className="detail-section product-workflow-section">
-    <div className="section-heading"><div><h3><button type="button" className="product-details-toggle" aria-expanded={detailsOpen} aria-controls={`product-details-${order.id}`} onClick={() => setDetailsOpen(!detailsOpen)}><ChevronDown size={18} aria-hidden="true" />采购产品明细<span>{detailsOpen ? "收起" : "展开"}</span></button></h3><p hidden={!detailsOpen}>{onlinePurchase ? "网上采购由采购直接登记物流发货，采购或仓库收货并入库。" : "每个 SKU 只保留一个当前节点，采购端与供应商端同步显示。"}</p></div>{!onlinePurchase && <div className="batch-acceptance-actions"><span>{progress.completed} / {progress.total} 项生产完成</span>{canSelectProducts && <SelectAllProducts items={order.items} selectedIds={selectedItems} disabled={batchBusy} onChange={setSelectedItems} />}{canPurchase(user.role) && !order.archived_at && <button type="button" className="primary" disabled={batchBusy || !selected.length} onClick={()=>void acceptSelected()}>{batchBusy ? "正在验收…" : `批量验收（${selected.length}）`}</button>}{["admin","boss","warehouse"].includes(user.role) && !order.archived_at && <BatchStockButton order={order} user={user} selectedIds={selectedItems} busy={batchBusy} onBusy={setBatchBusy} onSaved={id=>setSelectedItems(current=>current.filter(value=>value!==id))} onChanged={onChanged} />}<span role="status">{batchResult}</span></div>}</div>
+    <div className="section-heading"><div><h3><button type="button" className="product-details-toggle" aria-expanded={detailsOpen} aria-controls={`product-details-${order.id}`} onClick={() => setDetailsOpen(!detailsOpen)}><ChevronDown size={18} aria-hidden="true" />采购产品明细<span>{detailsOpen ? "收起" : "展开"}</span></button></h3><p hidden={!detailsOpen}>{onlinePurchase ? "网上采购由采购直接登记物流发货，采购或仓库收货并入库。" : "每个 SKU 只保留一个当前节点，采购端与供应商端同步显示。"}</p></div>{!onlinePurchase && <div className="batch-acceptance-actions"><span>{progress.completed} / {progress.total} 项生产完成</span>{canSelectProducts && <SelectAllProducts items={order.items} selectedIds={selectedItems} disabled={batchBusy} onChange={setSelectedItems} />}{(canBatchWorkflow || canBatchAcceptance) && <><select className="batch-action-select" aria-label="批量操作" value={batchAction} disabled={batchBusy || !selected.length} onChange={event => { setBatchAction(event.target.value as BatchProductAction | ""); setBatchResult(""); }}><option value="">批量操作（{selected.length}）</option>{canBatchWorkflow && <option value="production">设为生产中</option>}{canBatchWorkflow && <option value="complete">设为生产完成</option>}{canBatchAcceptance && <option value="acceptance">采购验收</option>}</select><button type="button" className="primary" disabled={batchBusy || !batchAction || !eligible.length} onClick={()=>void runSelectedAction()}>{batchBusy ? "正在处理…" : `执行（${eligible.length}）`}</button></>}{["admin","boss","warehouse"].includes(user.role) && !order.archived_at && <BatchStockButton order={order} user={user} selectedIds={selectedItems} busy={batchBusy} onBusy={setBatchBusy} onSaved={id=>setSelectedItems(current=>current.filter(value=>value!==id))} onChanged={onChanged} />}<span role="status">{batchAction && !eligible.length ? "所选产品当前不符合该操作条件" : batchResult}</span></div>}</div>
     {!onlinePurchase && <div className={`production-meter tone-${meterTone}`} role="progressbar" aria-label="产品生产进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.progress}><span style={{ width: progress.progress + "%" }} /><strong>{progress.progress}%</strong></div>}
     <div className="product-workflow-scroll" id={`product-details-${order.id}`} hidden={!detailsOpen} tabIndex={0} aria-label="产品明细表，小屏幕可横向滚动">
       <div className="product-workflow-table" role="table" aria-label="采购产品明细与生产进度">

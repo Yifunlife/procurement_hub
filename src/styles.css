@@ -458,6 +458,10 @@ label small { font-size: 12px; line-height: 1.5; color: var(--muted); font-weigh
 .product-workflow-table { width: 100%; min-width: 0; background: #fff; container-type: inline-size; --product-columns: minmax(34px, .28fr) minmax(64px, .65fr) minmax(0, 1.8fr) minmax(0, .9fr) minmax(0, .9fr) repeat(2, minmax(0, 1fr)) minmax(0, 1.3fr) repeat(4, minmax(0, .7fr)); }
 .batch-acceptance-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .batch-acceptance-actions button { min-height: 32px; padding: 6px 10px; font-size: 12px; }
+.batch-action-select { min-height: 32px; max-width: 148px; padding: 5px 28px 5px 9px; border: 1px solid #cbd6e5; border-radius: 9px; background: #fff; color: var(--ink); font-size: 12px; font-weight: 700; line-height: 1.2; cursor: pointer; }
+.batch-action-select:hover { border-color: var(--blue); }
+.batch-action-select:focus-visible { outline: 3px solid rgba(237,189,11,.7); outline-offset: 2px; }
+.batch-action-select:disabled { cursor: not-allowed; opacity: .55; }
 .batch-acceptance-actions [role="status"] { font-size: 12px; overflow-wrap: anywhere; }
 .sku-select { width: 16px; height: 16px; flex: 0 0 16px; margin-right: 4px; accent-color: var(--blue); }
 .sku-select-all { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; white-space: nowrap; cursor: pointer; }
