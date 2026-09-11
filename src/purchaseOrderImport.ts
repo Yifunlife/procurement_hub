@@ -124,12 +124,12 @@ function matchSupplier(suppliers: Supplier[], fileName: string, sourceText: stri
   return ranked[0]?.score >= 35 ? ranked[0].supplier : null;
 }
 
-function classifyProduct(source: string, catalog: SupplierProduct[]) {
+function classifyProduct(source: string, catalog: SupplierProduct[]): { productType: ProductType; recognized: boolean } {
   const normalized = compact(source);
   const catalogMatch = catalog.map((product) => ({ product, score: productScore(product, normalized) })).sort((left, right) => right.score - left.score)[0];
-  if (catalogMatch?.score >= 12) return catalogMatch.product.product_type;
-  for (const [type, terms] of PRODUCT_TYPE_TERMS) if (terms.some((term) => normalized.includes(compact(term)))) return type;
-  return "定制加工类";
+  if (catalogMatch?.score >= 12) return { productType: catalogMatch.product.product_type, recognized: true };
+  for (const [type, terms] of PRODUCT_TYPE_TERMS) if (terms.some((term) => normalized.includes(compact(term)))) return { productType: type, recognized: true };
+  return { productType: "定制加工类", recognized: false };
 }
 
 function extractCellImages(buffer: ArrayBuffer) {
@@ -229,11 +229,12 @@ export async function importPurchaseOrder(file: File, suppliers: Supplier[]): Pr
     const imageId = String(imageCell?.f || imageCell?.v || "").match(/ID_[A-F0-9]+/i)?.[0] || "";
     const sourceImage = cellImages.get(imageId) || null;
     const image = sourceImage ? new File([sourceImage], `${productName.slice(0, 50) || imageId}.${sourceImage.name.split(".").pop()}`, { type: sourceImage.type }) : null;
+    const classification = classifyProduct(`${productName} ${material} ${specification}`, catalog);
     return {
       model: text(cell(row, columns.model)),
       productName,
       color: text(cell(row, columns.color)),
-      productType: classifyProduct(`${productName} ${material} ${specification}`, catalog),
+      productType: classification.productType,
       quantity: Number(cell(row, columns.quantity)),
       unit: text(cell(row, columns.unit)),
       unitPrice: Number(cell(row, columns.unitPrice)) || 0,
@@ -242,11 +243,12 @@ export async function importPurchaseOrder(file: File, suppliers: Supplier[]): Pr
       installationMethod: text(cell(row, columns.installation)),
       packagingVolume: text(cell(row, columns.volume)),
       image,
+      recognitionWarning: classification.recognized ? "" : `第 ${sheetRow + 1} 行“${productName}”未能识别产品类型，请手动选择`,
     };
   });
   const orderDate = excelDate(metadataCell(metadataRows, ["下单时间", "下单日期"])) || dataRows.map(({ row }) => excelDate(cell(row, columns.date))).find(Boolean) || "";
   const requiredShipDate = dataRows.map(({ row }) => excelDate(cell(row, columns.shipDate))).find(Boolean) || "";
   const poNumber = dataRows.map(({ row }) => text(cell(row, columns.poNumber))).find(Boolean) || "";
-  const warnings = [!poNumber && "采购单内没有 PO 编号，请补充", !requiredShipDate && "采购单内没有要求发货日期，请补充", !supplier && "没有可靠匹配到供应商，请手动选择", !projectName && "没有识别到项目名称，请补充"].filter(Boolean) as string[];
+  const warnings = [!poNumber && "采购单内没有 PO 编号，请补充", !requiredShipDate && "采购单内没有要求发货日期，请补充", !supplier && "没有可靠匹配到供应商，请手动选择", !projectName && "没有识别到项目名称，请补充", ...items.map((item) => item.recognitionWarning).filter(Boolean)].filter(Boolean) as string[];
   return { poNumber, projectName, orderDate, requiredShipDate, supplierId: supplier?.id || "", supplierName: supplier ? `${supplier.code} · ${supplier.name}` : "", items, imageCount: items.filter((item) => item.image).length, warnings };
 }

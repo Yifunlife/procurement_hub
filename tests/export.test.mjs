@@ -7,7 +7,7 @@ import * as XLSX from 'xlsx';
 const source = ts.transpileModule(readFileSync(new URL('../src/exportData.ts', import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText.replace('from "xlsx"', `from ${JSON.stringify(import.meta.resolve('xlsx'))}`);
-const { purchaseWorkbook, financeWorkbook } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const { purchaseWorkbook, financeWorkbook, warehouseStockWorkbook } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 const roundTrip = (book) => XLSX.read(XLSX.write(book, { type: 'buffer', bookType: 'xlsx' }), { type: 'buffer', cellDates: true, cellNF: true });
 const order = (index) => ({
   id: `id-${index}`, po_number: `001-${index}`, supplier_code: 'SP-1001', supplier_name: '=HYPERLINK("https://example.test")', project_name: '测试项目', status: 'in_production', order_date: '2026-09-01', required_ship_date: '2026-09-20', promised_ship_date: null, estimated_ship_date: null, purchaser_name: '测试采购', commercial_terms: null, commercial_status: 'unverified', internal_requirements: '内部包装要求', archived_at: null,
@@ -53,4 +53,14 @@ test('empty exports retain meaningful headers and finance export does not contai
   assert.deepEqual(book.SheetNames, ['结算汇总', '付款发票成本记录']);
   assert.ok(book.Sheets['结算汇总'].A1); assert.ok(book.Sheets['付款发票成本记录'].A1);
   assert.equal(JSON.stringify(book).includes('内部要求'), false);
+});
+
+test('warehouse stock export keeps the PO, receipt quantities and stock location together', () => {
+  const book = roundTrip(warehouseStockWorkbook({ id: 'receipt-12345678', po_number: 'PO-001', project_name: '测试项目', supplier_name: '测试供应商', product_name: '测试产品', model: 'SKU-01', product_type: '配件类', specification: '规格 A', unit: '件', ordered_quantity: 10, received_quantity: 6, received_date: '2026-09-09', stocked_quantity: 6, warehouse_name: '配件仓', storage_location: 'A-01-03', stocked_at: '2026-09-10T01:00:00.000Z', stocked_by: '仓管', images: [{ id: 'image-1' }] }, 'https://example.test'));
+  assert.deepEqual(book.SheetNames, ['入库单', '入库产品明细']);
+  const summary = XLSX.utils.sheet_to_json(book.Sheets['入库单']);
+  const items = XLSX.utils.sheet_to_json(book.Sheets['入库产品明细']);
+  assert.equal(summary[0]['入库单号'], 'RK-RECEIPT1'); assert.equal(summary[0]['仓库'], '配件仓');
+  assert.equal(items[0]['本次到货数量'], 6); assert.equal(items[0]['本次入库数量'], 6);
+  assert.equal(items[0]['产品图片链接（需登录系统）'], 'https://example.test/api/attachments/image-1');
 });

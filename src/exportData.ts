@@ -8,6 +8,26 @@ const basis = { unknown: "待核实", inclusive: "单价含税", exclusive: "单
 const date = (value: string | null) => value ? new Date(`${value}T00:00:00Z`) : "待填写";
 const yuan = (value: number | null) => value === null ? "待核实" : value / 100;
 type Cell = string | number | Date;
+export type WarehouseStockExport = {
+  id: string;
+  po_number: string;
+  project_name: string;
+  supplier_name: string;
+  product_name: string;
+  model: string;
+  product_type: string;
+  specification: string;
+  unit: string;
+  ordered_quantity: number;
+  received_quantity: number;
+  received_date: string;
+  stocked_quantity: number;
+  warehouse_name: string;
+  storage_location: string;
+  stocked_at: string | null;
+  stocked_by: string | null;
+  images: Array<{ id: string }>;
+};
 
 function append(book: XLSX.WorkBook, name: string, headers: string[], rows: Cell[][], decimals: number[] = [], integers: number[] = []) {
   const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows], { dateNF: "yyyy-mm-dd" });
@@ -37,6 +57,13 @@ export function financeWorkbook(orders: FinanceOrder[]) {
   const book = XLSX.utils.book_new();
   append(book, "结算汇总", ["PO编号", "项目名称", "供应商名称", "留档状态", "执行条件", "币种", "价格口径", "税率（%）", "未税金额", "税额", "应付总额（含税）", "累计已付款", "未付款（负数为超付）", "累计开票金额", "额外成本", "含税采购成本"], orders.map((order) => [order.po_number, order.project_name, order.supplier_name, order.archived_at ? "已作废留档" : "有效", order.commercial_status === "confirmed" ? "已核实" : "待核实", "人民币", basis[order.commercial_terms?.price_basis || "unknown"], order.commercial_terms?.tax_rate_bps == null ? "待核实" : order.commercial_terms.tax_rate_bps / 100, yuan(order.net_cents), yuan(order.tax_cents), yuan(order.payable_cents), yuan(order.paid_cents), yuan(order.unpaid_cents), yuan(order.invoiced_cents), yuan(order.extra_cost_cents), yuan(order.cost_cents)]), [7, 8, 9, 10, 11, 12, 13, 14, 15]);
   append(book, "付款发票成本记录", ["PO编号", "项目名称", "供应商名称", "记录编号", "类型", "记录日期", "凭证编号", "金额（人民币元）", "记录状态", "冲销对应原记录编号", "备注 / 冲销原因", "操作人", "登记时间（UTC）"], orders.flatMap((order) => order.entries.map((entry) => [order.po_number, order.project_name, order.supplier_name, entry.id, kind[entry.kind], date(entry.record_date), entry.reference, entry.amount_cents / 100, entry.reversal_of ? "冲销记录" : order.entries.some((other) => other.reversal_of === entry.id) ? "已冲销（原记录保留）" : "有效", entry.reversal_of || "", entry.note, entry.actor_name, entry.created_at])), [7]);
+  return book;
+}
+
+export function warehouseStockWorkbook(receipt: WarehouseStockExport, origin: string) {
+  const book = XLSX.utils.book_new();
+  append(book, "入库单", ["入库单号", "PO编号", "项目名称", "供应商", "入库日期", "仓库", "库位", "入库人"], [[`RK-${receipt.id.replace(/[^a-z0-9]/gi, "").slice(0, 8).toUpperCase()}`, receipt.po_number, receipt.project_name || "", receipt.supplier_name, date(receipt.stocked_at), receipt.warehouse_name, receipt.storage_location, receipt.stocked_by || ""]]);
+  append(book, "入库产品明细", ["型号", "产品名称", "产品类型", "规格 / 备注", "采购数量", "本次到货数量", "本次入库数量", "单位", "产品图片链接（需登录系统）"], [[receipt.model || "", receipt.product_name, receipt.product_type, receipt.specification || "", receipt.ordered_quantity, receipt.received_quantity, receipt.stocked_quantity, receipt.unit, receipt.images.map((image) => `${origin}/api/attachments/${encodeURIComponent(image.id)}`).join("\n")]], [], [4, 5, 6]);
   return book;
 }
 

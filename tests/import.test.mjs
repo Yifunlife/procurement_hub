@@ -100,3 +100,14 @@ test('spreadsheet with no valid product line returns the inline warning instead 
   assert.deepEqual(imported.items, []);
   assert.deepEqual(imported.warnings, ['采购单中没有识别到有效的产品明细']);
 });
+
+test('unrecognized product type remains editable and is called out in the import warning', async () => {
+  const book = XLSX.utils.book_new();
+  const sheet = XLSX.utils.aoa_to_sheet([['产品名称', '数量', '单位'], ['未知工序产品', 2, '件']]);
+  XLSX.utils.book_append_sheet(book, sheet, '采购单');
+  const file = new File([XLSX.write(book, { type: 'buffer', bookType: 'xlsx' })], '未知产品.xlsx');
+  const imported = await importPurchaseOrder(file, []);
+  assert.equal(imported.items[0].productName, '未知工序产品');
+  assert.equal(imported.items[0].productType, '定制加工类');
+  assert.ok(imported.warnings.some((warning) => warning.includes('未知工序产品') && warning.includes('未能识别产品类型')));
+});

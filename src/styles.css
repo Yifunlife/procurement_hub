@@ -145,6 +145,22 @@ label small { font-size: 12px; line-height: 1.5; color: var(--muted); font-weigh
 .global-error button { border: 0; background: transparent; color: white; text-decoration: underline; text-underline-offset: 3px; }
 .toast { position: fixed; z-index: 60; right: 24px; bottom: 24px; display: flex; align-items: center; gap: 9px; padding: 13px 17px; border-radius: 11px; background: var(--ink); color: white; box-shadow: var(--shadow); font-size: 13px; animation: toast-in .28s cubic-bezier(.2,.8,.2,1); }
 @keyframes toast-in { from { transform: translateY(12px); opacity: 0; } }
+.warehouse-exception-reminder { position: fixed; z-index: 55; right: 24px; bottom: 76px; width: min(350px, calc(100vw - 48px)); overflow: hidden; border: 1px solid #d98378; border-radius: 12px; background: #fff; box-shadow: 0 16px 42px rgba(77, 28, 23, .22); animation: exception-reminder-in .32s cubic-bezier(.2,.8,.2,1); }
+.warehouse-exception-reminder > header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: #a8372c; color: #fff; }
+.warehouse-exception-reminder > header span { display: inline-flex; align-items: center; gap: 8px; }
+.warehouse-exception-reminder > header strong { font-size: 13px; }
+.warehouse-exception-reminder > header small { padding: 3px 7px; border-radius: 99px; background: rgba(255,255,255,.18); font-size: 10px; font-weight: 800; }
+.warehouse-exception-reminder > p { padding: 10px 14px 7px; color: #7b372e; font-size: 11px; line-height: 1.45; }
+.warehouse-exception-reminder > div { display: grid; padding: 0 8px 8px; }
+.warehouse-exception-reminder button { display: flex; align-items: center; justify-content: space-between; gap: 9px; width: 100%; padding: 9px 7px; border: 0; border-top: 1px solid #f0d8d4; background: transparent; color: var(--ink); text-align: left; }
+.warehouse-exception-reminder button:hover { background: #fff5f3; }
+.warehouse-exception-reminder button > span { display: grid; min-width: 0; gap: 3px; }
+.warehouse-exception-reminder button strong, .warehouse-exception-reminder button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.warehouse-exception-reminder button strong { font-size: 11px; }
+.warehouse-exception-reminder button small { color: #8e2d24; font-size: 10px; }
+.warehouse-exception-reminder button svg { flex: 0 0 auto; color: #a8372c; }
+.warehouse-exception-more { display: block; padding: 2px 14px 11px; color: #8e2d24; font-size: 10px; }
+@keyframes exception-reminder-in { from { transform: translateY(16px); opacity: 0; } }
 
 .orders-surface { min-height: 0; flex: 1; display: flex; flex-direction: column; padding: 16px 20px 20px; }
 .warehouse-workbench { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 14px; padding: 18px 20px 20px; overflow: hidden; }
@@ -189,8 +205,14 @@ label small { font-size: 12px; line-height: 1.5; color: var(--muted); font-weigh
 .warehouse-decision input { width: 16px; height: 16px; margin: 0; accent-color: var(--green); }
 .warehouse-action .file-picker { margin: 0; }
 .warehouse-action .file-picker label { min-height: auto; }
+.warehouse-correction-actions { display: grid; gap: 10px; padding: 0 12px 13px; }
+.warehouse-correction-actions label { display: grid; gap: 5px; color: #53647c; font-size: 11px; font-weight: 700; }
+.warehouse-correction-actions textarea { min-height: 62px; }
+.warehouse-correction-actions > div { display: flex; justify-content: flex-end; gap: 8px; }
 .warehouse-files { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 0 18px 16px; color: var(--muted); font-size: 11px; }
 .warehouse-files a { color: var(--green); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.warehouse-export { display: flex; justify-content: flex-end; padding: 0 18px 16px; }
+.warehouse-export .secondary { min-height: 34px; font-size: 12px; }
 .warehouse-empty, .warehouse-loading { display: grid; place-items: center; align-content: center; gap: 7px; min-height: 220px; padding: 30px; color: var(--muted); text-align: center; }
 .warehouse-empty svg { color: var(--green); }
 .warehouse-empty strong { color: var(--ink); font-size: 14px; }
@@ -585,6 +607,17 @@ label small { font-size: 12px; line-height: 1.5; color: var(--muted); font-weigh
 .shipment-summary span { color: var(--muted); font-size: 10px; }
 .shipment-summary strong { color: var(--green); font-size: 19px; font-variant-numeric: tabular-nums; }
 .shipment-list { margin-top: 12px; }
+.shipment-record-actions { display: inline-flex; align-items: center; gap: 11px; }
+.shipment-correction-trigger { min-height: 34px; padding: 7px 13px; border: 1px solid #d5a700; border-radius: 8px; background: var(--yellow); color: var(--ink); font-size: 12px; font-weight: 800; box-shadow: 0 3px 0 rgba(18,35,63,.13); }
+.shipment-correction-trigger:hover { background: #f6c916; transform: translateY(-1px); }
+.shipment-correction-panel { display: grid; gap: 12px; margin: -2px 0 12px; padding: 14px; border: 1px solid #d6b027; border-radius: 9px; background: #fff9df; }
+.shipment-correction-panel > div:first-child { display: grid; gap: 3px; }
+.shipment-correction-panel > div:first-child strong { color: var(--green-dark); font-size: 14px; }
+.shipment-correction-panel > div:first-child small { color: #695312; font-size: 11px; }
+.shipment-correction-item { display: grid; gap: 9px; padding: 12px; border: 1px solid #e7d483; border-radius: 8px; background: var(--paper); }
+.shipment-correction-item > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.shipment-correction-item > header strong { font-size: 12px; }
+.shipment-correction-item > header small { color: var(--muted); font-size: 10px; }
 .shipment-head, .shipment-line { display: grid; grid-template-columns: 130px 80px 70px minmax(150px, 1fr) minmax(120px, auto); gap: 12px; align-items: center; }
 .shipment-head { padding: 7px 8px; color: var(--muted); font-size: 10px; font-weight: 700; }
 .shipment-line { min-height: 62px; padding: 9px 8px; border-top: 1px solid var(--line); font-size: 11px; }
@@ -592,6 +625,17 @@ label small { font-size: 12px; line-height: 1.5; color: var(--muted); font-weigh
 .shipment-line > span:first-child, .shipment-line > span:nth-child(4) { display: grid; gap: 4px; }
 .shipment-line strong { font-size: 12px; font-variant-numeric: tabular-nums; }
 .shipment-line small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.shipment-correction { margin-top: 5px; }
+.shipment-correction summary { display: inline-flex; align-items: center; min-height: 31px; padding: 5px 9px; border: 1px solid #b9c9db; border-radius: 7px; background: #f8fafd; color: var(--green); cursor: pointer; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.shipment-correction summary:hover { border-color: var(--green); background: #edf6f1; }
+.shipment-correction form { display: grid; gap: 6px; margin-top: 6px; padding: 7px; border: 1px solid #d7e0ec; border-radius: 7px; background: #f8fafd; }
+.shipment-correction label { display: grid; gap: 3px; color: var(--muted); font-size: 10px; font-weight: 700; }
+.shipment-correction textarea { min-height: 44px; font-size: 11px; }
+.shipment-correction button { justify-self: start; min-height: 27px; padding: 4px 8px; font-size: 10px; }
+.shipment-correction-status { display: block; margin-top: 4px; color: #9a6500 !important; white-space: normal !important; }
+.warehouse-exception-alert { display: grid; gap: 4px; margin-top: 7px; padding: 8px 9px; border: 1px solid #e8b2aa; border-left: 4px solid #b43b2d; border-radius: 7px; background: #fff3f1; color: #8e2d24; }
+.warehouse-exception-alert strong { color: #8e2d24; font-size: 11px; }
+.warehouse-exception-alert small { color: #8e2d24; font-size: 10px; line-height: 1.4; white-space: normal; }
 .shipment-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .shipment-files a { border-radius: 7px; padding: 5px 7px; background: var(--paper-deep); color: var(--green); font-size: 10px; font-weight: 650; text-decoration: none; }
 .shipment-files a:hover { background: var(--mint); }
@@ -802,6 +846,12 @@ label small { font-size: 12px; line-height: 1.5; color: var(--muted); font-weigh
 .import-summary small { color: #52675f; font-size: 10px; line-height: 1.5; }
 .import-summary ul { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 16px; margin: 0; padding: 0; color: #87532c; font-size: 10px; list-style-position: inside; }
 .import-unrecognized-warning { margin: 14px 0 0; padding: 11px 14px; border-radius: 9px; background: var(--signal-soft); color: var(--ink); font-size: 13px; font-weight: 700; }
+.import-unrecognized-warning ul { display: grid; gap: 3px; margin: 6px 0 0; padding-left: 19px; font-size: 12px; font-weight: 500; }
+.order-created { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 14px; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); }
+.order-created > svg { color: var(--green); }
+.order-created h3 { margin: 0; font-size: 17px; }
+.order-created p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+.order-created > div:last-child { display: flex; gap: 8px; }
 .online-purchase-shipment { display: grid; place-items: center; gap: 5px; padding: 8px; text-align: center; }
 .online-purchase-shipment small { color: var(--muted); }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
@@ -953,6 +1003,9 @@ label small { font-size: 12px; line-height: 1.5; color: var(--muted); font-weigh
   .shipment-line > span:nth-child(3)::before { content: "箱数"; }
   .shipment-line > span:nth-child(4)::before { content: "物流信息"; }
   .shipment-line > span:nth-child(5)::before { content: "发货附件"; }
+  .shipment-record-actions { gap: 8px; }
+  .shipment-correction-trigger { min-height: 32px; padding-inline: 10px; }
+  .shipment-correction-item > header { align-items: start; flex-direction: column; gap: 3px; }
   .internal-editor .file-picker { grid-column: auto; }
   .directory-intro { align-items: stretch; flex-direction: column; }
   .supplier-filter-bar { align-items: stretch; flex-wrap: wrap; }
@@ -983,6 +1036,7 @@ label small { font-size: 12px; line-height: 1.5; color: var(--muted); font-weigh
   .draft-item-grid .wide-field { grid-column: 1 / -1; }
   .draft-item-grid > .file-picker { grid-column: 1 / -1; }
   .form-actions { position: sticky; bottom: -1px; z-index: 2; margin-inline: -15px; padding: 13px 15px; background: var(--paper); }
+  .warehouse-exception-reminder { right: 15px; bottom: 67px; width: calc(100vw - 30px); }
   .toast { left: 15px; right: 15px; bottom: 15px; justify-content: center; }
 }
 

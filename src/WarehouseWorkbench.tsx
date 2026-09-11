@@ -1,15 +1,16 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, ClipboardCheck, FileText, PackageCheck, Truck, Upload } from "lucide-react";
+import { AlertTriangle, Check, ClipboardCheck, Download, FileText, PackageCheck, Truck, Upload } from "lucide-react";
 import { api } from "./api";
 import { FilePicker } from "./FilePicker";
 import type { User } from "./types";
 
-type WarehouseTab = "arrival" | "inspection" | "exception" | "stock" | "stocked";
+type WarehouseTab = "arrival" | "inspection" | "exception" | "stock" | "stocked" | "shipment_correction";
 type Attachment = { id: string; kind: "arrival_photo" | "delivery_note" | "exception_photo"; file_name: string; content_type: string };
 type ProductImage = { id: string; item_id: string; file_name: string; kind: "product_image" | "production_photo" };
 type Arrival = { order_id: string; po_number: string; project_name: string; supplier_name: string; is_online_purchase: number; item_id: string; product_name: string; model: string; product_type: string; specification: string; quantity: number; unit: string; shipped_quantity: number; received_quantity: number; carrier: string; tracking_number: string; shipped_at: string | null; images: ProductImage[] };
 type Receipt = { id: string; order_id: string; item_id: string; po_number: string; project_name: string; supplier_name: string; is_online_purchase: number; product_name: string; model: string; product_type: string; specification: string; unit: string; ordered_quantity: number; shipped_quantity: number; received_quantity: number; received_date: string; received_by: string; status: "pending_inspection" | "passed" | "exception" | "stocked"; exception_type: string | null; exception_quantity: number | null; exception_notes: string; inspected_at: string | null; inspected_by: string | null; stocked_quantity: number; warehouse_name: string; storage_location: string; stocked_at: string | null; stocked_by: string | null; attachments: Attachment[]; images: ProductImage[] };
-type Queue = { arrivals: Arrival[]; receipts: Receipt[] };
+type ShipmentCorrection = { id: string; order_id: string; shipment_id: string; shipment_number: string; item_id: string; po_number: string; project_name: string; supplier_name: string; is_online_purchase: number; product_name: string; model: string; unit: string; previous_quantity: number; corrected_quantity: number; delta_quantity: number; reason: string; requested_by_name: string; requested_at: string; received_quantity: number; stocked_quantity: number };
+type Queue = { arrivals: Arrival[]; receipts: Receipt[]; shipmentCorrections: ShipmentCorrection[] };
 
 const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Australia/Sydney" }).format(new Date());
 const canOperate = (user: User, online: boolean) => ["warehouse", "boss", "admin"].includes(user.role) || (online && ["purchaser", "boss", "admin", "management"].includes(user.role));
@@ -30,25 +31,35 @@ export function WarehouseWorkbench({ user, refreshVersion, onChanged }: { user: 
     inspection: queue?.receipts.filter(receipt => receipt.status === "pending_inspection") || [],
     exception: queue?.receipts.filter(receipt => receipt.status === "exception") || [],
     stock: queue?.receipts.filter(receipt => receipt.status === "passed" && receipt.stocked_quantity < receipt.received_quantity) || [],
-    stocked: queue?.receipts.filter(receipt => receipt.status === "stocked") || [],
+    stocked: queue?.receipts.filter(receipt => receipt.status === "stocked") || [], shipment_correction: queue?.shipmentCorrections || [],
   }), [queue]);
   const saved = async (message: string) => { await Promise.all([load(), onChanged(message)]); };
   const tabs: Array<{ id: WarehouseTab; label: string }> = [
-    { id: "arrival", label: "待到货" }, { id: "inspection", label: "待验收" }, { id: "exception", label: "验收异常" }, { id: "stock", label: "待入库" }, { id: "stocked", label: "已入库" },
+    { id: "arrival", label: "待到货" }, { id: "inspection", label: "待验收" }, { id: "exception", label: "验收异常" }, { id: "stock", label: "待入库" }, { id: "stocked", label: "已入库" }, { id: "shipment_correction", label: "发货更正" },
   ];
   return <section className="warehouse-workbench" aria-label="仓库验收">
     <div className="warehouse-intro"><div><h2>仓库验收</h2><p>直接读取已发货的采购产品；到货、验收和入库均按产品与批次留痕。</p></div><button type="button" className="secondary" onClick={() => void load()}>刷新队列</button></div>
     <nav className="warehouse-tabs" aria-label="仓库验收状态">{tabs.map(item => <button key={item.id} type="button" className={tab === item.id ? "active" : ""} aria-current={tab === item.id ? "page" : undefined} onClick={() => setTab(item.id)}>{item.label}<span>{groups[item.id].length}</span></button>)}</nav>
     {error && <p className="form-error" role="alert">{error}</p>}
-    {!queue ? <p className="warehouse-loading" role="status">正在读取仓库待办…</p> : <WarehouseList tab={tab} rows={groups[tab]} user={user} onChanged={saved} />}
+    {!queue ? <p className="warehouse-loading" role="status">正在读取仓库待办…</p> : tab === "shipment_correction" ? <ShipmentCorrectionList rows={groups.shipment_correction} user={user} onChanged={saved} /> : <WarehouseList tab={tab} rows={groups[tab]} user={user} onChanged={saved} />}
   </section>;
 }
 
 function WarehouseList({ tab, rows, user, onChanged }: { tab: WarehouseTab; rows: Array<Arrival | Receipt>; user: User; onChanged: (message: string) => Promise<void> }) {
   const heading: Record<WarehouseTab, [string, string]> = {
-    arrival: ["待到货", "已发货但仍有未到数量的产品"], inspection: ["待验收", "已确认到货，等待仓库核对产品、数量、规格、外观与包装"], exception: ["验收异常", "异常已同步到采购订单记录，等待采购负责人处理"], stock: ["待入库", "验收通过后才能登记仓库与库位"], stocked: ["已入库", "已完成入库的收货验收记录"],
+    arrival: ["待到货", "已发货但仍有未到数量的产品"], inspection: ["待验收", "已确认到货，等待仓库核对产品、数量、规格、外观与包装"], exception: ["验收异常", "异常已同步到采购订单记录，等待采购负责人处理"], stock: ["待入库", "验收通过后才能登记仓库与库位"], stocked: ["已入库", "已完成入库的收货验收记录"], shipment_correction: ["发货数量更正", "采购申请更正且产品已有收货或入库记录时，由仓库确认"],
   };
   return <section className="warehouse-list"><header><div><h3>{heading[tab][0]}</h3><p>{heading[tab][1]}</p></div><strong>{rows.length} 条</strong></header>{rows.length ? <div className="warehouse-rows">{rows.map(row => tab === "arrival" ? <ArrivalRow key={row.item_id} row={row as Arrival} user={user} onChanged={onChanged} /> : <ReceiptRow key={(row as Receipt).id} row={row as Receipt} tab={tab} user={user} onChanged={onChanged} />)}</div> : <div className="warehouse-empty"><PackageCheck size={26} /><strong>当前没有{heading[tab][0]}记录</strong><p>新的发货、到货或入库操作会自动同步到这里。</p></div>}</section>;
+}
+
+function ShipmentCorrectionList({ rows, user, onChanged }: { rows: ShipmentCorrection[]; user: User; onChanged: (message: string) => Promise<void> }) {
+  return <section className="warehouse-list"><header><div><h3>发货数量更正</h3><p>确认后会同步采购单的已发数量；不会覆盖原始发货记录。</p></div><strong>{rows.length} 条</strong></header>{rows.length ? <div className="warehouse-rows">{rows.map(row => <ShipmentCorrectionRow key={row.id} row={row} user={user} onChanged={onChanged} />)}</div> : <div className="warehouse-empty"><PackageCheck size={26} /><strong>暂无待确认的发货更正</strong><p>采购在仓库已收货或入库后更正数量，会显示在这里。</p></div>}</section>;
+}
+
+function ShipmentCorrectionRow({ row, user, onChanged }: { row: ShipmentCorrection; user: User; onChanged: (message: string) => Promise<void> }) {
+  const [note, setNote] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const decide = async (decision: "approve" | "reject") => { setBusy(true); setError(""); try { await api(`/api/warehouse/shipment-corrections/${row.id}`, { method: "POST", body: JSON.stringify({ decision, note }) }); await onChanged(decision === "approve" ? "已确认发货数量更正，采购与仓库数量已同步" : "已驳回发货数量更正申请"); } catch (cause) { setError(cause instanceof Error ? cause.message : "处理失败，请重试"); } finally { setBusy(false); } };
+  return <article className="warehouse-row"><div className="warehouse-row-main"><div className="warehouse-identity"><span className="warehouse-product-image empty">更正</span><div><strong>{row.po_number} · {row.shipment_number}</strong><span>{row.product_name}{row.model ? ` · ${row.model}` : ""}</span><small>{row.supplier_name} · {row.project_name || "无项目"}</small></div></div><div><span>原登记 / 更正为</span><strong>{row.previous_quantity} / {row.corrected_quantity} {row.unit}</strong></div><div><span>仓库已收 / 已入</span><strong>{row.received_quantity} / {row.stocked_quantity} {row.unit}</strong></div><div><span>采购说明</span><strong>{row.reason}</strong><small>{row.requested_by_name} · {date(row.requested_at)}</small></div></div>{canOperate(user, row.is_online_purchase === 1) && <details className="warehouse-action" open><summary><ClipboardCheck size={16} />确认更正</summary><div className="warehouse-correction-actions"><label>仓库备注（驳回时建议填写）<textarea value={note} maxLength={2000} disabled={busy} onChange={event => setNote(event.target.value)} placeholder="例如：实收数量已核对，可按更正数量同步" /></label>{error && <p className="form-error">{error}</p>}<div><button className="secondary" disabled={busy} onClick={() => void decide("reject")}>{busy ? "处理中" : "驳回"}</button><button className="primary" disabled={busy} onClick={() => void decide("approve")}>{busy ? "处理中" : "确认并同步"}</button></div></div></details>}</article>;
 }
 
 function Identity({ row }: { row: Arrival | Receipt }) {
@@ -74,7 +85,20 @@ function ArrivalRow({ row, user, onChanged }: { row: Arrival; user: User; onChan
 }
 
 function ReceiptRow({ row, tab, user, onChanged }: { row: Receipt; tab: WarehouseTab; user: User; onChanged: (message: string) => Promise<void> }) {
-  return <article className="warehouse-row"><div className="warehouse-row-main"><Identity row={row} /><div><span>本次到货</span><strong>{row.received_quantity} {row.unit}</strong><small>{date(row.received_date)}</small></div><div><span>验收状态</span><strong>{row.status === "pending_inspection" ? "待验收" : row.status === "passed" ? "验收通过" : row.status === "exception" ? "验收异常" : "已入库"}</strong><small>{row.inspected_by || row.received_by}</small></div>{tab === "exception" ? <div><span>异常</span><strong>{exceptionLabel[row.exception_type || "other"]} {row.exception_quantity} {row.unit}</strong><small>{row.exception_notes}</small></div> : tab === "stock" || tab === "stocked" ? <div><span>入库</span><strong>{row.stocked_quantity} / {row.received_quantity} {row.unit}</strong><small>{row.warehouse_name ? `${row.warehouse_name} / ${row.storage_location}` : "待填写"}</small></div> : <ReceiptAttachments attachments={row.attachments} />}</div>{tab === "inspection" && canOperate(user, row.is_online_purchase === 1) && <InspectionAction row={row} onChanged={onChanged} />}{tab === "stock" && canOperate(user, row.is_online_purchase === 1) && <StockAction row={row} onChanged={onChanged} />}{row.attachments.length > 0 && tab !== "inspection" && <div className="warehouse-files"><FileText size={15} />{row.attachments.map(file => <a key={file.id} href={`/api/warehouse/attachments/${file.id}`} target="_blank" rel="noreferrer">{file.kind === "arrival_photo" ? "到货照片" : file.kind === "exception_photo" ? "异常照片" : "送货单"}</a>)}</div>}</article>;
+  return <article className="warehouse-row"><div className="warehouse-row-main"><Identity row={row} /><div><span>本次到货</span><strong>{row.received_quantity} {row.unit}</strong><small>{date(row.received_date)}</small></div><div><span>验收状态</span><strong>{row.status === "pending_inspection" ? "待验收" : row.status === "passed" ? "验收通过" : row.status === "exception" ? "验收异常" : "已入库"}</strong><small>{row.inspected_by || row.received_by}</small></div>{tab === "exception" ? <div><span>异常</span><strong>{exceptionLabel[row.exception_type || "other"]} {row.exception_quantity} {row.unit}</strong><small>{row.exception_notes}</small></div> : tab === "stock" || tab === "stocked" ? <div><span>入库</span><strong>{row.stocked_quantity} / {row.received_quantity} {row.unit}</strong><small>{row.warehouse_name ? `${row.warehouse_name} / ${row.storage_location}` : "待填写"}</small></div> : <ReceiptAttachments attachments={row.attachments} />}</div>{tab === "inspection" && canOperate(user, row.is_online_purchase === 1) && <InspectionAction row={row} onChanged={onChanged} />}{tab === "stock" && canOperate(user, row.is_online_purchase === 1) && <StockAction row={row} onChanged={onChanged} />}{row.attachments.length > 0 && tab !== "inspection" && <div className="warehouse-files"><FileText size={15} />{row.attachments.map(file => <a key={file.id} href={`/api/warehouse/attachments/${file.id}`} target="_blank" rel="noreferrer">{file.kind === "arrival_photo" ? "到货照片" : file.kind === "exception_photo" ? "异常照片" : "送货单"}</a>)}</div>}{tab === "stocked" && <WarehouseStockExportButton row={row} />}</article>;
+}
+
+function WarehouseStockExportButton({ row }: { row: Receipt }) {
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const download = async () => {
+    setBusy(true); setError("");
+    try {
+      const exporter = await import("./exportData");
+      exporter.downloadWorkbook(exporter.warehouseStockWorkbook(row, window.location.origin), "入库单", 1);
+    } catch { setError("入库单导出失败，请重试"); }
+    finally { setBusy(false); }
+  };
+  return <div className="warehouse-export"><button type="button" className="secondary" disabled={busy} onClick={() => void download()}><Download size={15} />{busy ? "正在导出" : "导出入库单"}</button>{error && <p className="form-error" role="alert">{error}</p>}</div>;
 }
 
 function ReceiptAttachments({ attachments }: { attachments: Attachment[] }) { return <div><span>附件</span><strong>{attachments.length ? `${attachments.length} 份` : "未上传"}</strong><small>{attachments.map(file => file.kind === "arrival_photo" ? "到货照片" : file.kind === "delivery_note" ? "送货单" : "异常照片").join("、")}</small></div>; }

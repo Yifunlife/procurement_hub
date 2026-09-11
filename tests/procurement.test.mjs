@@ -106,6 +106,26 @@ test('multiple shipment photos are saved together and invalid batches leave no r
   assert.equal(db.prepare('SELECT quantity FROM shipment_records').get().quantity, 60);
 });
 
+test('procurement corrects unreceived shipments directly and warehouse confirms corrections after receipt', async () => {
+  const { db, request } = fixture();
+  db.exec("UPDATE purchase_orders SET status='ready_to_ship' WHERE id='order'; UPDATE order_items SET workflow_stage='production_complete', acceptance_status='approved' WHERE id='item-0'; INSERT INTO staff_roles VALUES ('buyer','warehouse')");
+  seedProductionPhotos(db);
+  const shipment = new FormData();
+  for (const [key, value] of Object.entries({ shippedAt: '2026-09-03', quantity: '5', isComplete: 'false', carrier: '测试物流', trackingNumber: 'SHIP-CORRECTION', boxCount: '1', items: JSON.stringify([{ itemId: 'item-0', quantity: 5 }]) })) shipment.set(key, value);
+  assert.equal((await request('vendor', '/orders/order/shipments', shipment, 'POST')).status, 201);
+  const shipmentId = db.prepare("SELECT id FROM shipment_records WHERE order_id='order'").get().id;
+  const direct = await request('boss', `/orders/order/shipments/${shipmentId}/items/item-0/correction`, { correctedQuantity: 3, reason: '发货时多填 2 件' }, 'POST');
+  assert.equal(direct.status, 200);
+  assert.equal(db.prepare("SELECT shipped_quantity FROM order_items WHERE id='item-0'").get().shipped_quantity, 3);
+  assert.equal((await request('buyer', '/orders/order/items/item-0/warehouse', { action: 'received', quantity: 2, requestId: crypto.randomUUID(), recordDate: '2026-09-04' }, 'POST')).status, 200);
+  const pending = await request('boss', `/orders/order/shipments/${shipmentId}/items/item-0/correction`, { correctedQuantity: 2, reason: '实际物流仅发 2 件' }, 'POST');
+  assert.equal(pending.status, 202);
+  const correctionId = db.prepare("SELECT id FROM shipment_quantity_corrections WHERE status='pending'").get().id;
+  assert.equal((await request('buyer', `/warehouse/shipment-corrections/${correctionId}`, { decision: 'approve', note: '已按实际到货核对' }, 'POST')).status, 200);
+  assert.equal(db.prepare("SELECT shipped_quantity FROM order_items WHERE id='item-0'").get().shipped_quantity, 2);
+  assert.equal(db.prepare("SELECT status FROM shipment_quantity_corrections WHERE id=?").get(correctionId).status, 'applied');
+});
+
 test('purchaser can delete an incorrect clean product but not the final or processed product', async () => {
   const { db, request, objects } = fixture();
   db.exec("INSERT INTO attachments (id,order_id,item_id,kind,file_name,content_type,r2_key,uploaded_by,created_at) VALUES ('wrong-image','order','item-0','product_image','wrong.png','image/png','wrong-image','buyer','2026-09-03')");
@@ -673,6 +693,10 @@ test('warehouse queue keeps receipt, inspection exception and stock-in as separa
   assert.equal((await request('buyer', `/warehouse/receipts/${second.id}/inspection`, exception, 'POST')).status, 200);
   queue = await (await request('buyer', '/warehouse/queue', undefined, 'GET')).json();
   assert.equal(queue.receipts.find(row => row.id === second.id).status, 'exception');
+  const dashboard = await (await request('boss', '/dashboard', undefined, 'GET')).json();
+  const exceptionItem = dashboard.orders.find(row => row.id === 'order').items.find(row => row.id === 'item-1');
+  assert.equal(exceptionItem.warehouse_receipts[0].status, 'exception');
+  assert.equal(exceptionItem.warehouse_receipts[0].exception_notes, '外包装破损');
   assert.equal((await request('buyer', `/warehouse/receipts/${second.id}/stock`, { quantity: 1, warehouseName: '配件仓', storageLocation: 'A-01-04', requestId: crypto.randomUUID() }, 'POST')).status, 409);
 });
 

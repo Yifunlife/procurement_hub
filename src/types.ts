@@ -80,6 +80,7 @@ export type OrderItem = {
   received_quantity: number;
   stocked_quantity: number;
   warehouse_history?: Array<{ action: string; quantity: number; actor_name: string; record_date: string; created_at: string }>;
+  warehouse_receipts?: Array<{ id: string; received_quantity: number; received_date: string; status: "pending_inspection" | "passed" | "exception" | "stocked"; exception_type: string | null; exception_quantity: number | null; exception_notes: string; inspected_at: string | null; inspected_by: string | null; updated_at: string }>;
   correction_history?: Array<{ action: string; quantity: number; reason: string; actor_name: string; created_at: string }>;
   freight_payment_status?: "unknown" | "paid" | "unpaid";
   freight_payment_revision?: number;
@@ -126,6 +127,7 @@ export type OrderEvent = {
 
 export type ShipmentRecord = {
   items: Array<{ itemId: string; productName: string; quantity: number }>;
+  corrections?: Array<{ id: string; item_id: string; previous_quantity: number; corrected_quantity: number; delta_quantity: number; reason: string; status: "pending" | "applied" | "rejected"; requested_by_name: string; requested_at: string; decided_by_name?: string | null; decision_note?: string | null }>;
   id: string;
   order_id: string;
   shipment_number: string;

@@ -287,13 +287,14 @@ async function dashboard(request: Request, env: Env) {
   let attachments: Array<Record<string, unknown>> = [];
   let events: Array<Record<string, unknown>> = [];
   let shipments: Array<Record<string, unknown>> = [];
+  let shipmentCorrections: Array<Record<string, unknown>> = [];
   let shipmentAttachments: Array<Record<string, unknown>> = [];
   let reminders: Array<Record<string, unknown>> = [];
   let deliveryHistory: Array<Record<string, unknown>> = [];
   let commercialHistory: Array<Record<string, unknown>> = [];
   if (visibleOrderIds.length) {
     const placeholders = visibleOrderIds.map((_, index) => `?${index + 1}`).join(",");
-    const [itemsResult, attachmentsResult, eventsResult, shipmentsResult, shipmentAttachmentsResult, remindersResult, deliveryHistoryResult, commercialHistoryResult] = await env.DB.batch([
+    const [itemsResult, attachmentsResult, eventsResult, shipmentsResult, shipmentAttachmentsResult, remindersResult, deliveryHistoryResult, commercialHistoryResult, shipmentCorrectionsResult] = await env.DB.batch([
       env.DB.prepare(`SELECT i.*, (SELECT json_group_array(json_object('id', a.id, 'decision', a.decision, 'reason', a.reason, 'actorName', a.actor_name, 'createdAt', a.created_at, 'revision', a.production_revision, 'photoIds', json(a.photo_ids))) FROM product_acceptances a WHERE a.item_id = i.id) AS acceptance_json FROM order_items i WHERE order_id IN (${placeholders}) ORDER BY created_at`).bind(...visibleOrderIds),
       env.DB.prepare(`SELECT id, order_id, item_id, kind, purpose, file_name, content_type, created_at FROM attachments WHERE deleted_at IS NULL AND order_id IN (${placeholders}) ORDER BY created_at DESC`).bind(...visibleOrderIds),
       env.DB.prepare(`SELECT id, order_id, event_type, detail, actor_name, created_at FROM order_events WHERE order_id IN (${placeholders}) ORDER BY created_at DESC`).bind(...visibleOrderIds),
@@ -302,6 +303,7 @@ async function dashboard(request: Request, env: Env) {
       env.DB.prepare(`SELECT id, order_id, reminder_type, message, target_date, created_at FROM order_reminders WHERE order_id IN (${placeholders}) ORDER BY created_at DESC`).bind(...visibleOrderIds),
       env.DB.prepare(`SELECT * FROM order_delivery_history WHERE order_id IN (${placeholders}) ORDER BY changed_at DESC, rowid DESC`).bind(...visibleOrderIds),
       env.DB.prepare(`SELECT * FROM commercial_history WHERE order_id IN (${placeholders}) ORDER BY created_at DESC, rowid DESC`).bind(...visibleOrderIds),
+      env.DB.prepare(`SELECT * FROM shipment_quantity_corrections WHERE order_id IN (${placeholders}) ORDER BY requested_at DESC`).bind(...visibleOrderIds),
     ]);
     items = itemsResult.results as Array<Record<string, unknown>>;
     attachments = attachmentsResult.results as Array<Record<string, unknown>>;
@@ -311,10 +313,16 @@ async function dashboard(request: Request, env: Env) {
     reminders = remindersResult.results as Array<Record<string, unknown>>;
     deliveryHistory = deliveryHistoryResult.results as Array<Record<string, unknown>>;
     commercialHistory = commercialHistoryResult.results as Array<Record<string, unknown>>;
+    shipmentCorrections = shipmentCorrectionsResult.results as Array<Record<string, unknown>>;
   }
-  for (const item of items) { item.warehouse_history = (await env.DB.prepare("SELECT action,quantity,actor_name,COALESCE(record_date,substr(created_at,1,10)) AS record_date,created_at FROM warehouse_records WHERE item_id=?1 ORDER BY created_at,id").bind(item.id).all()).results; item.acceptance_history = JSON.parse(String(item.acceptance_json || "[]")); delete item.acceptance_json; }
+  for (const item of items) {
+    item.warehouse_history = (await env.DB.prepare("SELECT action,quantity,actor_name,COALESCE(record_date,substr(created_at,1,10)) AS record_date,created_at FROM warehouse_records WHERE item_id=?1 ORDER BY created_at,id").bind(item.id).all()).results;
+    if (user.role !== "supplier") item.warehouse_receipts = (await env.DB.prepare("SELECT id,received_quantity,received_date,status,exception_type,exception_quantity,exception_notes,inspected_at,inspected_by,updated_at FROM warehouse_receipts WHERE item_id=?1 ORDER BY updated_at DESC,id DESC").bind(item.id).all()).results;
+    item.acceptance_history = JSON.parse(String(item.acceptance_json || "[]"));
+    delete item.acceptance_json;
+  }
   for (const item of items) item.correction_history=(await env.DB.prepare('SELECT action,quantity,reason,actor_name,created_at FROM item_corrections WHERE item_id=?1 ORDER BY created_at,id').bind(item.id).all()).results;
-  for (const shipment of shipments) { shipment.attachments = shipmentAttachments.filter((attachment) => attachment.shipment_id === shipment.id); shipment.items = JSON.parse(String(shipment.items_json || "[]")); delete shipment.items_json; }
+  for (const shipment of shipments) { shipment.attachments = shipmentAttachments.filter((attachment) => attachment.shipment_id === shipment.id); shipment.items = JSON.parse(String(shipment.items_json || "[]")); shipment.corrections = shipmentCorrections.filter((correction) => correction.shipment_id === shipment.id); delete shipment.items_json; }
   for (const order of orders) {
     order.items = items.filter((item) => item.order_id === order.id);
     order.attachments = attachments.filter((attachment) => attachment.order_id === order.id);
@@ -1054,7 +1062,10 @@ async function warehouseQueue(request: Request, env: Env) {
   const productImages = itemIds.length ? (await env.DB.prepare(`SELECT id,item_id,file_name,kind FROM attachments WHERE deleted_at IS NULL AND item_id IN (${itemIds.map((_,index)=>`?${index+1}`).join(",")}) AND kind IN ('product_image','production_photo') AND content_type LIKE 'image/%' ORDER BY created_at DESC`).bind(...itemIds).all()).results : [];
   for (const arrival of arrivals) arrival.images = productImages.filter(image => image.item_id === arrival.item_id);
   for (const receipt of receipts) receipt.images = productImages.filter(image => image.item_id === receipt.item_id);
-  return json({ arrivals, receipts });
+  const shipmentCorrections = (await env.DB.prepare(`SELECT c.*,po.po_number,po.project_name,s.name AS supplier_name,s.is_online_purchase,sr.shipment_number,i.product_name,i.model,i.unit,i.quantity AS ordered_quantity,i.shipped_quantity,i.received_quantity,i.stocked_quantity
+    FROM shipment_quantity_corrections c JOIN purchase_orders po ON po.id=c.order_id JOIN suppliers s ON s.id=po.supplier_id JOIN shipment_records sr ON sr.id=c.shipment_id JOIN order_items i ON i.id=c.item_id
+    WHERE c.status='pending' AND po.archived_at IS NULL ORDER BY c.requested_at`).all()).results;
+  return json({ arrivals, receipts, shipmentCorrections });
 }
 
 async function downloadWarehouseReceiptAttachment(request: Request, env: Env, attachmentId: string) {
@@ -1316,9 +1327,9 @@ async function createShipment(request: Request, env: Env, orderId: string) {
   if (!onlinePurchase && lines.some(line => !photographedItems.some(photo => photo.item_id === line.itemId) && productRows.find(item => item.id === line.itemId)?.production_photo_waived !== 1)) return error("本次发货产品缺少实拍照片，且未记录“未提供实物图”", 409);
   const totals = await env.DB.prepare(
     `SELECT (SELECT COALESCE(SUM(quantity), 0) FROM order_items WHERE order_id = ?1) AS ordered,
-            (SELECT COALESCE(SUM(quantity), 0) FROM shipment_records WHERE order_id = ?1) AS shipped`,
-  ).bind(orderId).first<{ ordered: number; shipped: number }>();
-  if (productRows.reduce((sum, item) => sum + item.shipped_quantity, 0) !== Number(totals?.shipped || 0)) return error("历史部分发货缺少产品明细，请先由采购核实，不能推测产品已发数量", 409);
+            (SELECT COALESCE(SUM(shipped_quantity), 0) FROM order_items WHERE order_id = ?1) AS shipped,
+            (SELECT COALESCE(SUM(quantity), 0) FROM shipment_records WHERE order_id = ?1) AS recorded_shipped`,
+  ).bind(orderId).first<{ ordered: number; shipped: number; recorded_shipped: number }>();
   const remaining = Number(totals?.ordered || 0) - Number(totals?.shipped || 0);
   if (quantity > remaining + 0.0001) return error(`本次发货数量超过待发数量 ${remaining}`);
   const shipsAllRemaining = Math.abs(quantity - remaining) < 0.0001;
@@ -1332,7 +1343,7 @@ async function createShipment(request: Request, env: Env, orderId: string) {
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO shipment_records (id, shipment_number, order_id, quantity, is_complete, carrier, tracking_number, box_count, shipped_at, created_by, created_at)
         SELECT ?1, printf('SH-%03d', COALESCE(MAX(CAST(substr(shipment_number, 4) AS INTEGER)), 0) + 1), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10 FROM shipment_records HAVING COALESCE(SUM(CASE WHEN order_id = ?2 THEN quantity ELSE 0 END), 0) = ?11`)
-        .bind(shipmentId, orderId, quantity, isComplete ? 1 : 0, carrier, trackingNumber, boxCount, shippedAt, actor.id, timestamp, Number(totals?.shipped || 0)),
+        .bind(shipmentId, orderId, quantity, isComplete ? 1 : 0, carrier, trackingNumber, boxCount, shippedAt, actor.id, timestamp, Number(totals?.recorded_shipped || 0)),
       ...lines.map(line => env.DB.prepare("INSERT INTO shipment_items (shipment_id, item_id, quantity) VALUES (?1, ?2, ?3)").bind(shipmentId, line.itemId, line.quantity)),
       ...attachments.map(entry => env.DB.prepare("INSERT INTO shipment_attachments (id, shipment_id, order_id, kind, file_name, content_type, r2_key, uploaded_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")
         .bind(entry.fileId, shipmentId, orderId, entry.kind, entry.file.name, entry.file.type || "application/octet-stream", entry.key, actor.id, timestamp)),
@@ -1348,6 +1359,71 @@ async function createShipment(request: Request, env: Env, orderId: string) {
   }
   const shipment = await env.DB.prepare("SELECT shipment_number FROM shipment_records WHERE id = ?1").bind(shipmentId).first<{ shipment_number: string }>();
   return json({ ok: true, shipmentId, shipmentNumber: shipment?.shipment_number, status: isComplete ? "shipped" : "partial_shipped" }, 201);
+}
+
+type ShipmentQuantityCorrection = { id: string; order_id: string; shipment_id: string; item_id: string; previous_quantity: number; corrected_quantity: number; delta_quantity: number };
+
+async function applyShipmentQuantityCorrection(env: Env, correction: ShipmentQuantityCorrection, actor: SessionUser, eventDetail: string) {
+  const timestamp = now();
+  const [itemUpdate] = await env.DB.batch([
+    env.DB.prepare(`UPDATE order_items SET shipped_quantity=shipped_quantity+?1,
+      workflow_stage=CASE WHEN shipped_quantity+?1=quantity THEN 'shipment_complete' WHEN workflow_stage='shipment_complete' THEN 'ready_to_ship' ELSE workflow_stage END
+      WHERE id=?2 AND order_id=?3 AND shipped_quantity+?1 BETWEEN received_quantity AND quantity`).bind(correction.delta_quantity, correction.item_id, correction.order_id),
+    env.DB.prepare(`UPDATE purchase_orders SET
+      status=CASE WHEN NOT EXISTS(SELECT 1 FROM order_items WHERE order_id=?1 AND shipped_quantity<quantity) THEN 'shipped' ELSE 'ready_to_ship' END,
+      shipment_status=CASE WHEN NOT EXISTS(SELECT 1 FROM order_items WHERE order_id=?1 AND shipped_quantity>0) THEN 'none' WHEN NOT EXISTS(SELECT 1 FROM order_items WHERE order_id=?1 AND shipped_quantity<quantity) THEN 'complete' ELSE 'partial' END,
+      shipped_at=CASE WHEN NOT EXISTS(SELECT 1 FROM order_items WHERE order_id=?1 AND shipped_quantity>0) THEN NULL ELSE shipped_at END,
+      updated_at=?2 WHERE id=?1 AND archived_at IS NULL`).bind(correction.order_id, timestamp),
+    env.DB.prepare("UPDATE shipment_quantity_corrections SET status='applied',decided_by=?1,decided_by_name=?2,decided_at=?3 WHERE id=?4 AND status IN ('pending','applied')").bind(actor.id, actor.name, timestamp, correction.id),
+    env.DB.prepare("INSERT INTO order_events(id,order_id,event_type,detail,actor_id,actor_name,created_at) VALUES(?1,?2,'shipment_corrected',?3,?4,?5,?6)").bind(id(), correction.order_id, eventDetail, actor.id, actor.name, timestamp),
+  ]);
+  if (!itemUpdate.meta.changes) throw new Error("更正后的发货数量不能少于仓库已收数量，或超过采购数量");
+}
+
+async function requestShipmentQuantityCorrection(request: Request, env: Env, orderId: string, shipmentId: string, itemId: string) {
+  const actor = await requireSession(request, env, "purchaser");
+  const body = await readBody<{ correctedQuantity?: number; reason?: string }>(request);
+  if (Object.keys(body).some(key => !["correctedQuantity","reason"].includes(key)) || !Number.isSafeInteger(body.correctedQuantity) || Number(body.correctedQuantity) < 0 || typeof body.reason !== "string" || !body.reason.trim() || body.reason.length > 2000) return error("请填写更正后的整数数量及更正原因");
+  const line = await env.DB.prepare(`SELECT si.quantity AS original_quantity,i.shipped_quantity,i.received_quantity,i.stocked_quantity,i.quantity AS ordered_quantity,
+    COALESCE((SELECT SUM(delta_quantity) FROM shipment_quantity_corrections WHERE shipment_id=si.shipment_id AND item_id=si.item_id AND status='applied'),0) AS applied_delta
+    FROM shipment_items si JOIN order_items i ON i.id=si.item_id JOIN purchase_orders po ON po.id=i.order_id
+    WHERE si.shipment_id=?1 AND si.item_id=?2 AND i.order_id=?3 AND po.archived_at IS NULL AND po.status!='completed'`).bind(shipmentId,itemId,orderId).first<{original_quantity:number;shipped_quantity:number;received_quantity:number;stocked_quantity:number;ordered_quantity:number;applied_delta:number}>();
+  if (!line) return error("发货产品不存在、订单已作废或已完结",404);
+  const previousQuantity=Number(line.original_quantity)+Number(line.applied_delta), correctedQuantity=Number(body.correctedQuantity);
+  if (correctedQuantity===previousQuantity) return error("更正数量未变化");
+  if (await env.DB.prepare("SELECT id FROM shipment_quantity_corrections WHERE shipment_id=?1 AND item_id=?2 AND status='pending'").bind(shipmentId,itemId).first()) return error("该产品已有待仓库确认的更正申请",409);
+  const delta=correctedQuantity-previousQuantity;
+  if (Number(line.shipped_quantity)+delta<Number(line.received_quantity) || Number(line.shipped_quantity)+delta>Number(line.ordered_quantity)) return error("更正后数量不能少于仓库已收数量，也不能超过采购数量",409);
+  const correction: ShipmentQuantityCorrection={id:id(),order_id:orderId,shipment_id:shipmentId,item_id:itemId,previous_quantity:previousQuantity,corrected_quantity:correctedQuantity,delta_quantity:delta};
+  const requiresWarehouse=Number(line.received_quantity)>0 || Number(line.stocked_quantity)>0;
+  await env.DB.prepare(`INSERT INTO shipment_quantity_corrections(id,order_id,shipment_id,item_id,previous_quantity,corrected_quantity,delta_quantity,reason,status,requested_by,requested_by_name,requested_at)
+    VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)`).bind(correction.id,orderId,shipmentId,itemId,previousQuantity,correctedQuantity,delta,body.reason.trim(),requiresWarehouse?'pending':'applied',actor.id,actor.name,now()).run();
+  if (requiresWarehouse) {
+    await recordEvent(env,orderId,"shipment_correction_requested",`申请更正发货数量：${previousQuantity} → ${correctedQuantity} 件；${body.reason.trim()}`,actor);
+    return json({ ok:true, status:"pending" },202);
+  }
+  try { await applyShipmentQuantityCorrection(env,correction,actor,`更正发货数量：${previousQuantity} → ${correctedQuantity} 件；${body.reason.trim()}`); }
+  catch (cause) { await env.DB.prepare("DELETE FROM shipment_quantity_corrections WHERE id=?1 AND status='applied'").bind(correction.id).run(); return error(cause instanceof Error?cause.message:"更正失败，请刷新后重试",409); }
+  return json({ ok:true, status:"applied" });
+}
+
+async function decideShipmentQuantityCorrection(request: Request, env: Env, correctionId: string) {
+  const actor=await requireSession(request,env);
+  const body=await readBody<{decision?:string; note?:string}>(request);
+  if (!['approve','reject'].includes(body.decision||'') || (body.note!==undefined && (typeof body.note!=="string" || body.note.length>2000))) return error("请选择同意或驳回");
+  const correction=await env.DB.prepare(`SELECT c.*,s.is_online_purchase FROM shipment_quantity_corrections c JOIN purchase_orders po ON po.id=c.order_id JOIN suppliers s ON s.id=po.supplier_id WHERE c.id=?1 AND c.status='pending' AND po.archived_at IS NULL`).bind(correctionId).first<ShipmentQuantityCorrection & {is_online_purchase:number}>();
+  if (!correction) return error("更正申请不存在或已处理",404);
+  if (!canOperateWarehouse(actor,correction.is_online_purchase)) return error("没有权限确认发货更正",403);
+  if (body.decision==='reject') {
+    await env.DB.batch([
+      env.DB.prepare("UPDATE shipment_quantity_corrections SET status='rejected',decided_by=?1,decided_by_name=?2,decided_at=?3,decision_note=?4 WHERE id=?5 AND status='pending'").bind(actor.id,actor.name,now(),body.note?.trim()||'',correctionId),
+      env.DB.prepare("INSERT INTO order_events(id,order_id,event_type,detail,actor_id,actor_name,created_at) VALUES(?1,?2,'shipment_correction_rejected',?3,?4,?5,?6)").bind(id(),correction.order_id,`仓库驳回发货数量更正：${body.note?.trim()||'未填写原因'}`,actor.id,actor.name,now()),
+    ]);
+    return json({ok:true,status:'rejected'});
+  }
+  try { await applyShipmentQuantityCorrection(env,correction,actor,`仓库确认更正发货数量：${correction.previous_quantity} → ${correction.corrected_quantity} 件${body.note?.trim()?`；${body.note.trim()}`:''}`); }
+  catch (cause) { return error(cause instanceof Error?cause.message:"数量已变化，请刷新核对",409); }
+  return json({ok:true,status:'applied'});
 }
 
 async function transition(request: Request, env: Env, orderId: string, action: string) {
@@ -1540,6 +1616,8 @@ async function handleApi(request: Request, env: Env) {
   if (warehouseReceiptInspectionMatch && request.method === "POST") return inspectWarehouseReceipt(request, env, warehouseReceiptInspectionMatch[1]);
   const warehouseReceiptStockMatch = path.match(/^\/api\/warehouse\/receipts\/([^/]+)\/stock$/);
   if (warehouseReceiptStockMatch && request.method === "POST") return stockWarehouseReceipt(request, env, warehouseReceiptStockMatch[1]);
+  const shipmentCorrectionDecisionMatch = path.match(/^\/api\/warehouse\/shipment-corrections\/([^/]+)$/);
+  if (shipmentCorrectionDecisionMatch && request.method === "POST") return decideShipmentQuantityCorrection(request, env, shipmentCorrectionDecisionMatch[1]);
   const warehouseReceiptAttachmentMatch = path.match(/^\/api\/warehouse\/attachments\/([^/]+)$/);
   if (warehouseReceiptAttachmentMatch && request.method === "GET") return downloadWarehouseReceiptAttachment(request, env, warehouseReceiptAttachmentMatch[1]);
   if (path === "/api/finance" && request.method === "GET") return financeDashboard(request, env);
@@ -1579,6 +1657,8 @@ async function handleApi(request: Request, env: Env) {
   if (deliveryMatch && request.method === "PATCH") return updateDeliveryEstimate(request, env, deliveryMatch[1]);
   const itemProductionMatch = path.match(/^\/api\/orders\/([^/]+)\/items\/([^/]+)\/production$/);
   if (itemProductionMatch && request.method === "PATCH") return updateItemProduction(request, env, itemProductionMatch[1], itemProductionMatch[2]);
+  const shipmentItemCorrectionMatch = path.match(/^\/api\/orders\/([^/]+)\/shipments\/([^/]+)\/items\/([^/]+)\/correction$/);
+  if (shipmentItemCorrectionMatch && request.method === "POST") return requestShipmentQuantityCorrection(request, env, shipmentItemCorrectionMatch[1], shipmentItemCorrectionMatch[2], shipmentItemCorrectionMatch[3]);
   const orderItemMatch = path.match(/^\/api\/orders\/([^/]+)\/items\/([^/]+)$/);
   if (orderItemMatch && request.method === "DELETE") return removeOrderItem(request, env, orderItemMatch[1], orderItemMatch[2]);
   const acceptanceMatch = path.match(/^\/api\/orders\/([^/]+)\/items\/([^/]+)\/acceptance$/);
@@ -1608,7 +1688,7 @@ async function generateOrderReminders(env: Env) {
   const rows = (await env.DB.prepare(
     `SELECT po.id, COALESCE(po.promised_ship_date, po.required_ship_date) AS target_date,
             (SELECT COALESCE(SUM(quantity), 0) FROM order_items WHERE order_id = po.id) AS ordered_quantity,
-            (SELECT COALESCE(SUM(quantity), 0) FROM shipment_records WHERE order_id = po.id) AS shipped_quantity
+            (SELECT COALESCE(SUM(shipped_quantity), 0) FROM order_items WHERE order_id = po.id) AS shipped_quantity
      FROM purchase_orders po
      WHERE po.archived_at IS NULL AND po.status IN ('pending_confirmation', 'in_production', 'ready_to_ship')`,
   ).all()).results as Array<{ id: string; target_date: string; ordered_quantity: number; shipped_quantity: number }>;
