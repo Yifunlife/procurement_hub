@@ -141,7 +141,7 @@ function focusFirstFormError() {
 }
 
 function BrandLogo({ compact = false }: { compact?: boolean }) {
-  return <img className={compact ? "brand-logo compact" : "brand-logo"} src="/yifun-logo.png" alt="亦玩集团 YIFUN LIFE" width="1431" height="340" fetchPriority="high" />;
+  return <img className={compact ? "brand-logo compact" : "brand-logo"} src="/yifun-logo.png?v=20261022" alt="亦玩游乐 YIFUN LIFE" width="3870" height="591" fetchPriority="high" />;
 }
 
 function App() {
