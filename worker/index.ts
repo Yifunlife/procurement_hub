@@ -1191,16 +1191,16 @@ async function updateOrderIdentity(request: Request, env: Env, orderId: string) 
     FROM purchase_orders po JOIN suppliers s ON s.id=po.supplier_id WHERE po.id=?1 AND po.archived_at IS NULL`).bind(orderId).first<{ po_number: string; supplier_id: string; supplier_name: string; project_name: string; order_date: string; required_ship_date: string; purchaser_name: string; status: string; delivery_revision: number }>();
   if (!order) return error("采购单不存在", 404);
   if (body.previousPoNumber !== order.po_number || body.previousSupplierId !== order.supplier_id || body.previousName !== order.project_name || body.revision !== order.delivery_revision) return error("采购单已更新，请刷新后再修改", 409);
-  const poNumber = order.po_number;
+  const poNumber = body.poNumber === undefined ? order.po_number : typeof body.poNumber === "string" ? body.poNumber.trim() : "";
   const supplierId = body.supplierId?.trim() || "";
   const projectName = body.projectName?.trim().replace(/^(?:亦玩\s*)+/u, "").trim() || "";
   const purchaserName = order.purchaser_name;
-  if (body.poNumber !== undefined && body.poNumber.trim() !== order.po_number) return error("PO 编号由项目名称自动生成，不能修改", 403);
+  if (!poNumber) return error("请填写合同编号");
   if (body.purchaserName !== undefined && body.purchaserName.trim() !== order.purchaser_name) return error("采购负责人由创建账号自动记录，不能修改", 403);
   if (!supplierId || !projectName) return error("请完整填写供应商和项目名称");
   if (!validDate(body.orderDate) || !validDate(body.requiredShipDate)) return error("请填写有效的下单日期和要求发货日期");
   if (body.requiredShipDate! < body.orderDate!) return error("要求发货日期不能早于下单日期");
-  if (poNumber.length > 80) return error("PO 编号不能超过 80 个字");
+  if (poNumber.length > 80) return error("合同编号不能超过 80 个字");
   if (projectName.length > 120) return error("项目名称不能超过 120 个字");
   const supplierChanged = supplierId !== order.supplier_id;
   if (supplierChanged && order.status !== "pending_confirmation") return error("只能在待供应商确认阶段更正供应商", 409);
@@ -1223,11 +1223,11 @@ async function updateOrderIdentity(request: Request, env: Env, orderId: string) 
     const [result] = await env.DB.batch(statements);
     if (!result.meta.changes) return error("采购单已更新，请刷新后再修改", 409);
   } catch (caught) {
-    if (String(caught).includes("UNIQUE")) return error("PO 编号已存在，请更换后再保存", 409);
+    if (String(caught).includes("UNIQUE")) return error("合同编号已存在（包括作废留档订单），请更换后再保存", 409);
     if (String(caught).includes("price basis")) return error("该订单已有财务记录，不能更换供应商，请先与财务核对", 409);
     throw caught;
   }
-  const changes = [supplierChanged && `供应商：${order.supplier_name} → ${supplier.name}`, order.project_name !== projectName && `项目：${order.project_name} → ${projectName}`, order.order_date !== body.orderDate && `下单日期：${order.order_date} → ${body.orderDate}`, order.required_ship_date !== body.requiredShipDate && `要求发货：${order.required_ship_date} → ${body.requiredShipDate}`].filter(Boolean).join("；");
+  const changes = [order.po_number !== poNumber && `合同编号：${order.po_number} → ${poNumber}`, supplierChanged && `供应商：${order.supplier_name} → ${supplier.name}`, order.project_name !== projectName && `项目：${order.project_name} → ${projectName}`, order.order_date !== body.orderDate && `下单日期：${order.order_date} → ${body.orderDate}`, order.required_ship_date !== body.requiredShipDate && `要求发货：${order.required_ship_date} → ${body.requiredShipDate}`].filter(Boolean).join("；");
   await recordEvent(env, orderId, "order_info_updated", changes || "采购单基本信息已核对，内容未变化", actor);
   return json({ ok: true });
 }

@@ -654,7 +654,7 @@ test('procurement and admin can correct PO basic information with delivery audit
   assert.equal((await request('vendor', route, { ...base, projectName: '供应商不能改' }, 'PATCH')).status, 403);
   assert.equal((await request('buyer', route, { ...base, projectName: '' }, 'PATCH')).status, 400);
   assert.equal((await request('buyer', route, { ...base, previousName: '错误旧名' }, 'PATCH')).status, 409);
-  assert.equal((await request('buyer', route, { ...base, poNumber: 'NEW-PO' }, 'PATCH')).status, 403);
+  assert.equal((await request('buyer', route, { ...base, poNumber: ' ' }, 'PATCH')).status, 400);
   assert.equal((await request('buyer', route, { ...base, purchaserName: '其他人' }, 'PATCH')).status, 403);
   assert.equal((await request('buyer', route, { ...base, supplierId: 'supplier-sp-1002', projectName: '正确项目', requiredShipDate: '2026-09-25' }, 'PATCH')).status, 200);
   const updated = db.prepare("SELECT po_number,supplier_id,project_name,commercial_status FROM purchase_orders WHERE id='order'").get();
