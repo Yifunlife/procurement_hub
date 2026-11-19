@@ -183,7 +183,7 @@ export async function importPurchaseOrder(file: File, suppliers: Supplier[]): Pr
 
   const headers = rows[headerIndex];
   const columns = {
-    poNumber: headerColumn(headers, ["PO编号", "采购单号", "订单号"]),
+    poNumber: headerColumn(headers, ["合同编号", "PO编号", "采购单号", "订单号"]),
     date: headerColumn(headers, ["日期", "下单日期"]),
     model: headerColumn(headers, ["款号", "Item Number", "SKU", "型号"]),
     product: headerColumn(headers, ["产品名称", "品名"]),
@@ -251,6 +251,6 @@ export async function importPurchaseOrder(file: File, suppliers: Supplier[]): Pr
   const orderDate = excelDate(metadataCell(metadataRows, ["下单时间", "下单日期"])) || dataRows.map(({ row }) => excelDate(cell(row, columns.date))).find(Boolean) || "";
   const requiredShipDate = dataRows.map(({ row }) => excelDate(cell(row, columns.shipDate))).find(Boolean) || "";
   const poNumber = dataRows.map(({ row }) => text(cell(row, columns.poNumber))).find(Boolean) || "";
-  const warnings = [!poNumber && "采购单内没有 PO 编号，请补充", !requiredShipDate && "采购单内没有要求发货日期，请补充", !supplier && "没有可靠匹配到供应商，请手动选择", !projectName && "没有识别到项目名称，请补充", ...items.map((item) => item.recognitionWarning).filter(Boolean)].filter(Boolean) as string[];
+  const warnings = [!poNumber && "采购单内没有 合同编号，请补充", !requiredShipDate && "采购单内没有要求发货日期，请补充", !supplier && "没有可靠匹配到供应商，请手动选择", !projectName && "没有识别到项目名称，请补充", ...items.map((item) => item.recognitionWarning).filter(Boolean)].filter(Boolean) as string[];
   return { poNumber, projectName, orderDate, requiredShipDate, supplierId: supplier?.id || "", supplierName: supplier ? `${supplier.code} · ${supplier.name}` : "", items, imageCount: items.filter((item) => item.image).length, warnings };
 }

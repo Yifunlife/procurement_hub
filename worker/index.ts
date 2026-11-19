@@ -715,7 +715,7 @@ async function createOrder(request: Request, env: Env) {
     await env.DB.batch(statements);
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : "";
-    if (message.includes("UNIQUE")) return error("PO 编号已使用（包括作废留档订单），不能重复使用", 409);
+    if (message.includes("UNIQUE")) return error("合同编号已使用（包括作废留档订单），不能重复使用", 409);
     throw caught;
   }
   return json({ ok: true, orderId, itemIds }, 201);

@@ -18,7 +18,7 @@ test('purchase export includes every passed PO beyond pagination, preserves iden
   const book = roundTrip(purchaseWorkbook(Array.from({ length: 25 }, (_, i) => order(i)), 'https://example.test'));
   assert.deepEqual(book.SheetNames, ['采购单汇总', '产品明细']);
   const rows = XLSX.utils.sheet_to_json(book.Sheets['采购单汇总']);
-  assert.equal(rows.length, 25); assert.equal(rows[24]['PO编号'], '001-24');
+  assert.equal(rows.length, 25); assert.equal(rows[24]['合同编号'], '001-24');
   assert.equal(rows[0]['采购数量'], 100); assert.equal(rows[0]['已发数量'], 60); assert.equal(rows[0]['待发数量'], 40);
   assert.equal(rows[0]['产品金额合计（按单价口径）'], 125); assert.equal(rows[0]['价格口径'], '待核实');
   assert.ok(rows[0]['下单日期'] instanceof Date);
@@ -31,7 +31,7 @@ test('purchase export includes every passed PO beyond pagination, preserves iden
 
 test('purchase export respects supplied filtered subset and single order', () => {
   const rows = XLSX.utils.sheet_to_json(purchaseWorkbook([order(7)], 'https://example.test').Sheets['采购单汇总']);
-  assert.equal(rows.length, 1); assert.equal(rows[0]['PO编号'], '001-7');
+  assert.equal(rows.length, 1); assert.equal(rows[0]['合同编号'], '001-7');
 });
 
 test('finance exports unknowns, zero, overpayment and all original and reversal entries distinctly', () => {
